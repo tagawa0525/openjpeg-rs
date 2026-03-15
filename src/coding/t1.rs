@@ -2189,7 +2189,6 @@ mod tests {
     // --- Multi-pass roundtrip test ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn multi_pass_roundtrip() {
         // 1. Create a 4x4 block with known coefficients
         let original: [i32; 16] = [
@@ -2269,16 +2268,17 @@ mod tests {
 
         // 6. Convert decoded row-major data back.
         //    Decoder data is in row-major: data[r * w + c].
-        //    Each value is in two's complement (not SMR) with the magnitude representing
-        //    the reconstructed coefficient shifted by some bitplane rounding.
-        // 7. Verify decoded values are close to original (within half-bit precision).
-        //    The decoder produces values with "one plus half" rounding at the last
-        //    decoded bitplane, so we compare with tolerance of 1 << (T1_NMSEDEC_FRACBITS - 1).
-        let tolerance = 1i32 << (T1_NMSEDEC_FRACBITS - 1); // half of the LSB bucket
+        //    The encoder shifts input by FRACBITS and computes numbps by subtracting
+        //    FRACBITS, so the decoder output is at the original coefficient scale
+        //    (not shifted by FRACBITS). Each decoded value has "one plus half" rounding
+        //    at the least significant coded bitplane.
+        // 7. Verify decoded values are close to original (within ±2 tolerance
+        //    accounting for encode-side SMR rounding and decode-side half-bit midpoint).
+        let tolerance = 2i32;
         for r in 0..h as usize {
             for c in 0..w as usize {
                 let decoded = dec.data[r * w as usize + c];
-                let expected = original[r * w as usize + c] << T1_NMSEDEC_FRACBITS;
+                let expected = original[r * w as usize + c];
                 let diff = (decoded - expected).abs();
                 assert!(
                     diff <= tolerance,
