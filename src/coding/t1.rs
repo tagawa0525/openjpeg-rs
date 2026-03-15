@@ -1602,7 +1602,6 @@ mod tests {
     // --- Refinement pass tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn refpass_encode_decode_roundtrip() {
         use crate::coding::mqc::Mqc;
 
