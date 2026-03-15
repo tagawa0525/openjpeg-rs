@@ -1,6 +1,6 @@
 # Phase 100: 基盤プリミティブ
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## 概要
 
