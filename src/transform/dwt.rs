@@ -1,6 +1,8 @@
 // Discrete Wavelet Transform (C: dwt.c)
 // Scalar-only implementation (no SIMD, no thread pool).
 
+use crate::error::Result;
+
 /// Forward 1D 5-3 lifting (in-place on interleaved data).
 ///
 /// Data layout: `[s0, d0, s1, d1, ...]` when `cas=false` (even origin),
@@ -268,6 +270,33 @@ pub fn interleave_v<T: Copy>(
     }
 }
 
+/// Forward 2D 5-3 DWT (C: opj_dwt_encode).
+///
+/// `data`: row-major tile data, `w`×`h` pixels with row stride `stride`.
+/// `num_res`: number of resolution levels (num_res-1 decomposition levels).
+/// Processes from finest to coarsest: each level applies vertical then horizontal
+/// transform on the current LL subband, producing LL/LH/HL/HH subbands.
+pub fn dwt_encode_2d_53(
+    _data: &mut [i32],
+    _w: usize,
+    _h: usize,
+    _stride: usize,
+    _num_res: usize,
+) -> Result<()> {
+    todo!()
+}
+
+/// Inverse 2D 5-3 DWT (C: opj_dwt_decode).
+pub fn dwt_decode_2d_53(
+    _data: &mut [i32],
+    _w: usize,
+    _h: usize,
+    _stride: usize,
+    _num_res: usize,
+) -> Result<()> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +509,66 @@ mod tests {
         assert_eq!(dst[4], 20);
         assert_eq!(dst[8], 30);
         assert_eq!(dst[12], 40);
+    }
+
+    // ==================== 2D 5-3 tests ====================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_53_4x4_roundtrip() {
+        // 4×4 non-linear data, 2 resolution levels (1 decomposition)
+        #[rustfmt::skip]
+        let original = vec![
+            10, 23, 35, 41,
+            58, 62, 77, 80,
+            15, 28, 42, 53,
+            67, 71, 88, 95,
+        ];
+        let mut data = original.clone();
+        dwt_encode_2d_53(&mut data, 4, 4, 4, 2).unwrap();
+        assert_ne!(data, original);
+        dwt_decode_2d_53(&mut data, 4, 4, 4, 2).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_53_8x8_multi_level_roundtrip() {
+        // 8×8 data, 3 resolution levels (2 decompositions)
+        let mut original = vec![0i32; 64];
+        for (i, v) in original.iter_mut().enumerate() {
+            *v = (i as i32 * 7 + 13) % 256;
+        }
+        let mut data = original.clone();
+        dwt_encode_2d_53(&mut data, 8, 8, 8, 3).unwrap();
+        assert_ne!(data, original);
+        dwt_decode_2d_53(&mut data, 8, 8, 8, 3).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_53_odd_size_roundtrip() {
+        // 5×3 data, 2 resolution levels
+        #[rustfmt::skip]
+        let original = vec![
+            10, 20, 30, 40, 50,
+            60, 70, 80, 90, 100,
+            110, 120, 130, 140, 150,
+        ];
+        let mut data = original.clone();
+        dwt_encode_2d_53(&mut data, 5, 3, 5, 2).unwrap();
+        dwt_decode_2d_53(&mut data, 5, 3, 5, 2).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_53_single_res_noop() {
+        // num_res=1 means no decomposition, should be a no-op
+        let original = vec![10, 20, 30, 40];
+        let mut data = original.clone();
+        dwt_encode_2d_53(&mut data, 2, 2, 2, 1).unwrap();
+        assert_eq!(data, original);
     }
 }
