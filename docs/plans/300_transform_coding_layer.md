@@ -1,6 +1,6 @@
 # Phase 300: 変換・符号化レイヤー（スカラ）
 
-Status: PLANNED
+Status: IN_PROGRESS
 
 ## Context
 
