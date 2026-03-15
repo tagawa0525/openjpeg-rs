@@ -430,8 +430,9 @@ impl<'a> Mqc<'a> {
         self.ct = 12;
         self.start = 1;
         self.end_of_byte_stream_counter = 0;
-        // Ensure padding byte is 0 (not 0xFF)
-        debug_assert!(self.buf[0] == 0);
+        // Explicitly zero the padding byte so byteout behavior is correct
+        // in both debug and release builds.
+        self.buf[0] = 0;
     }
 
     /// Number of bytes written since init (C: opj_mqc_numbytes).
