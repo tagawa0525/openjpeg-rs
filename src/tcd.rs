@@ -308,7 +308,6 @@ mod tests {
     // --- TcdLayer ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_layer_default() {
         let layer = TcdLayer::default();
         assert_eq!(layer.numpasses, 0);
@@ -320,7 +319,6 @@ mod tests {
     // --- TcdCblkEnc ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_cblk_enc_default() {
         let cblk = TcdCblkEnc::default();
         assert!(cblk.data.is_empty());
@@ -334,7 +332,6 @@ mod tests {
     // --- TcdSeg ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_seg_default() {
         let seg = TcdSeg::default();
         assert_eq!(seg.len, 0);
@@ -345,7 +342,6 @@ mod tests {
     // --- TcdCblkDec ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_cblk_dec_default() {
         let cblk = TcdCblkDec::default();
         assert!(cblk.segs.is_empty());
@@ -357,7 +353,6 @@ mod tests {
     // --- TcdCodeBlocks ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_code_blocks_variants() {
         let empty = TcdCodeBlocks::Empty;
         assert!(matches!(empty, TcdCodeBlocks::Empty));
@@ -370,7 +365,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_code_blocks_default_is_empty() {
         let cblks = TcdCodeBlocks::default();
         assert!(matches!(cblks, TcdCodeBlocks::Empty));
@@ -379,7 +373,6 @@ mod tests {
     // --- TcdPrecinct ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_precinct_default() {
         let prec = TcdPrecinct::default();
         assert_eq!(prec.cw, 0);
@@ -392,7 +385,6 @@ mod tests {
     // --- TcdBand ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_band_default() {
         let band = TcdBand::default();
         assert_eq!(band.bandno, 0);
@@ -402,7 +394,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_band_is_empty() {
         // Default band has zero area → empty
         let band = TcdBand::default();
@@ -432,7 +423,6 @@ mod tests {
     // --- TcdResolution ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_resolution_default() {
         let res = TcdResolution::default();
         assert_eq!(res.pw, 0);
@@ -444,7 +434,6 @@ mod tests {
     // --- TcdTileComp ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_tile_comp_default() {
         let tc = TcdTileComp::default();
         assert_eq!(tc.numresolutions, 0);
@@ -456,7 +445,6 @@ mod tests {
     // --- TcdTile ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_tile_default() {
         let tile = TcdTile::default();
         assert!(tile.comps.is_empty());
@@ -469,7 +457,6 @@ mod tests {
     // --- Tcd ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_new_encoder() {
         let tcd = Tcd::new(false);
         assert!(!tcd.is_decoder);
@@ -478,7 +465,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_new_decoder() {
         let tcd = Tcd::new(true);
         assert!(tcd.is_decoder);
@@ -487,7 +473,6 @@ mod tests {
     // --- Hierarchy construction ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_hierarchy_construction() {
         // Build a minimal 1-component, 1-resolution, 1-band, 1-precinct hierarchy
         let cblk_enc = TcdCblkEnc {
@@ -567,7 +552,6 @@ mod tests {
     // --- TcdPass re-export ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcd_pass_from_t1() {
         let pass = TcdPass {
             rate: 100,
