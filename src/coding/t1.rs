@@ -4,7 +4,56 @@
 // Three coding passes per bitplane: Significance, Refinement, Clean-up.
 
 use crate::error::Result;
+use crate::transform::dwt::{dwt_getnorm, dwt_getnorm_real};
 use crate::types::*;
+
+/// Encoding pass information (C: opj_tcd_pass_t).
+pub struct TcdPass {
+    pub rate: u32,
+    pub distortion_decrease: f64,
+    pub len: u32,
+    pub term: bool,
+}
+
+/// Decoder segment.
+pub struct DecodeSegment<'a> {
+    pub data: &'a [u8],
+    pub num_passes: u32,
+}
+
+/// Compute weighted MSE decrease for a coding pass (C: opj_t1_getwmsedec).
+#[allow(clippy::too_many_arguments)]
+pub fn t1_getwmsedec(
+    nmsedec: i32,
+    compno: u32,
+    level: u32,
+    orient: u32,
+    bpno: i32,
+    qmfbid: u32,
+    mut stepsize: f64,
+    mct_norms: Option<&[f64]>,
+) -> f64 {
+    let w1 = match mct_norms {
+        Some(norms) if (compno as usize) < norms.len() => norms[compno as usize],
+        _ => 1.0,
+    };
+
+    let w2 = if qmfbid == 1 {
+        dwt_getnorm(level, orient)
+    } else {
+        let log2_gain = match orient {
+            0 => 0,
+            3 => 2,
+            _ => 1,
+        };
+        let w2 = dwt_getnorm_real(level, orient);
+        stepsize /= (1 << log2_gain) as f64;
+        w2
+    };
+
+    let wmsedec = w1 * w2 * stepsize * ((1u32 << bpno) as f64);
+    wmsedec * wmsedec * nmsedec as f64 / 8192.0
+}
 
 /// T1 workspace (C: opj_t1_t).
 ///
@@ -1018,6 +1067,309 @@ impl T1 {
             // C version: warn if sym != 0xa
         }
     }
+
+    // --- Full code-block encode/decode ---
+
+    /// Determine if a pass should be terminated (C: opj_t1_enc_is_term_pass).
+    fn is_term_pass(numbps: u32, cblksty: u32, bpno: i32, passtype: u32) -> bool {
+        // Last cleanup pass
+        if passtype == 2 && bpno == 0 {
+            return true;
+        }
+
+        if (cblksty & J2K_CCP_CBLKSTY_TERMALL) != 0 {
+            return true;
+        }
+
+        if (cblksty & J2K_CCP_CBLKSTY_LAZY) != 0 {
+            // Terminate the 4th cleanup pass
+            if bpno == (numbps as i32 - 4) && passtype == 2 {
+                return true;
+            }
+            // Beyond that, terminate refpass + clnpass (passtype > 0)
+            if bpno < (numbps as i32 - 4) && passtype > 0 {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Encode a code-block (C: opj_t1_encode_cblk).
+    ///
+    /// Data must already be in zigzag layout, shifted by T1_NMSEDEC_FRACBITS,
+    /// in two's complement. Returns (passes, cumulative_wmsedec).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_cblk(
+        &mut self,
+        buf: &mut [u8],
+        orient: u32,
+        compno: u32,
+        level: u32,
+        qmfbid: u32,
+        stepsize: f64,
+        cblksty: u32,
+        numcomps: u32,
+        mct_norms: Option<&[f64]>,
+    ) -> (Vec<TcdPass>, f64) {
+        let _ = numcomps; // unused, matches C
+
+        self.set_orient(orient);
+
+        // --- Convert to SMR, find max ---
+        let mut max = 0i32;
+        for i in 0..self.data.len() {
+            let tmp = self.data[i];
+            if tmp < 0 {
+                let clamped = if tmp == i32::MIN { i32::MIN + 1 } else { tmp };
+                max = max.max(-clamped);
+                self.data[i] = to_smr(clamped);
+            } else {
+                max = max.max(tmp);
+            }
+        }
+
+        let numbps = if max != 0 {
+            (int_floorlog2(max) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+        } else {
+            0
+        };
+
+        if numbps == 0 {
+            return (Vec::new(), 0.0);
+        }
+
+        // --- Init MQC ---
+        let mut mqc = crate::coding::mqc::Mqc::new(buf);
+        mqc.reset_states();
+        mqc.set_state(T1_CTXNO_UNI, 0, 46);
+        mqc.set_state(T1_CTXNO_AGG, 0, 3);
+        mqc.set_state(T1_CTXNO_ZC, 0, 4);
+        mqc.init_enc();
+
+        let mut bpno = numbps as i32 - 1;
+        let mut passtype = 2u32;
+        let mut cumwmsedec = 0.0f64;
+        let mut passes = Vec::new();
+
+        while bpno >= 0 {
+            let pass_type_byte = if bpno < (numbps as i32 - 4)
+                && passtype < 2
+                && (cblksty & J2K_CCP_CBLKSTY_LAZY) != 0
+            {
+                T1_TYPE_RAW
+            } else {
+                T1_TYPE_MQ
+            };
+
+            // Re-init after previous termination
+            if !passes.is_empty() {
+                let prev: &TcdPass = passes.last().unwrap();
+                if prev.term {
+                    if pass_type_byte == T1_TYPE_RAW {
+                        mqc.bypass_init_enc();
+                    } else {
+                        mqc.restart_init_enc();
+                    }
+                }
+            }
+
+            let nmsedec = match passtype {
+                0 => self.enc_sigpass(&mut mqc, bpno, pass_type_byte, cblksty),
+                1 => self.enc_refpass(&mut mqc, bpno, pass_type_byte),
+                2 => {
+                    let n = self.enc_clnpass(&mut mqc, bpno, cblksty);
+                    if (cblksty & J2K_CCP_CBLKSTY_SEGSYM) != 0 {
+                        mqc.segmark_enc();
+                    }
+                    n
+                }
+                _ => unreachable!(),
+            };
+
+            let tempwmsedec = t1_getwmsedec(
+                nmsedec, compno, level, orient, bpno, qmfbid, stepsize, mct_norms,
+            );
+            cumwmsedec += tempwmsedec;
+
+            let term = Self::is_term_pass(numbps, cblksty, bpno, passtype);
+
+            let rate = if term {
+                if pass_type_byte == T1_TYPE_RAW {
+                    mqc.bypass_flush_enc((cblksty & J2K_CCP_CBLKSTY_PTERM) != 0);
+                } else if (cblksty & J2K_CCP_CBLKSTY_PTERM) != 0 {
+                    mqc.erterm_enc();
+                } else {
+                    mqc.flush();
+                }
+                mqc.num_bytes() as u32
+            } else {
+                let rate_extra_bytes = if pass_type_byte == T1_TYPE_RAW {
+                    mqc.bypass_get_extra_bytes((cblksty & J2K_CCP_CBLKSTY_PTERM) != 0)
+                } else {
+                    3
+                };
+                mqc.num_bytes() as u32 + rate_extra_bytes
+            };
+
+            passes.push(TcdPass {
+                rate,
+                distortion_decrease: cumwmsedec,
+                len: 0, // computed below
+                term,
+            });
+
+            passtype += 1;
+            if passtype == 3 {
+                passtype = 0;
+                bpno -= 1;
+            }
+
+            // Code-switch RESET
+            if (cblksty & J2K_CCP_CBLKSTY_RESET) != 0 {
+                mqc.reset_enc();
+            }
+        }
+
+        // --- Post-process passes ---
+        if !passes.is_empty() {
+            // Ensure rates are monotonically increasing (backward scan)
+            let last_pass_rate = mqc.num_bytes() as u32;
+            let mut current_max = last_pass_rate;
+            for pass in passes.iter_mut().rev() {
+                if pass.rate > current_max {
+                    pass.rate = current_max;
+                } else {
+                    current_max = pass.rate;
+                }
+            }
+
+            // Prevent 0xFF as last data byte of a pass, and compute len
+            for passno in 0..passes.len() {
+                // data is written starting at buf[1] (buf[0] is padding)
+                if passes[passno].rate > 0 {
+                    let byte_idx = passes[passno].rate as usize; // offset from start=1 => buf[rate]
+                    if buf[byte_idx] == 0xFF {
+                        passes[passno].rate -= 1;
+                    }
+                }
+                let prev_rate = if passno == 0 {
+                    0
+                } else {
+                    passes[passno - 1].rate
+                };
+                passes[passno].len = passes[passno].rate - prev_rate;
+            }
+        }
+
+        (passes, cumwmsedec)
+    }
+
+    /// Decode a code-block (C: opj_t1_decode_cblk).
+    pub fn decode_cblk(
+        &mut self,
+        segments: &[DecodeSegment],
+        orient: u32,
+        roishift: u32,
+        numbps: u32,
+        cblksty: u32,
+    ) -> Result<()> {
+        self.set_orient(orient);
+
+        // Init MQC contexts
+        // We need a temporary buffer to back the MQC decoder. We'll process segment by segment.
+        let mut bpno_plus_one = (roishift + numbps) as i32;
+        if bpno_plus_one >= 31 {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "decode_cblk: unsupported bpno_plus_one = {} >= 31",
+                bpno_plus_one
+            )));
+        }
+        let mut passtype = 2u32;
+
+        // Concatenate all segment data into a contiguous buffer (+ extra bytes for decoder)
+        let total_len: usize = segments.iter().map(|s| s.data.len()).sum();
+        let mut cblkdata = vec![0u8; total_len + crate::types::COMMON_CBLK_DATA_EXTRA];
+        let mut offset = 0;
+        for seg in segments {
+            cblkdata[offset..offset + seg.data.len()].copy_from_slice(seg.data);
+            offset += seg.data.len();
+        }
+
+        let mut cblkdataindex = 0usize;
+
+        for seg in segments {
+            let seg_len = seg.data.len();
+
+            // Determine type for first pass in this segment
+            let pass_type_byte = if bpno_plus_one <= (numbps as i32 - 4)
+                && passtype < 2
+                && (cblksty & J2K_CCP_CBLKSTY_LAZY) != 0
+            {
+                T1_TYPE_RAW
+            } else {
+                T1_TYPE_MQ
+            };
+
+            let mut mqc = crate::coding::mqc::Mqc::new(&mut cblkdata[cblkdataindex..]);
+            mqc.reset_states();
+            mqc.set_state(T1_CTXNO_UNI, 0, 46);
+            mqc.set_state(T1_CTXNO_AGG, 0, 3);
+            mqc.set_state(T1_CTXNO_ZC, 0, 4);
+
+            if pass_type_byte == T1_TYPE_RAW {
+                mqc.raw_init_dec(seg_len);
+            } else {
+                mqc.init_dec(seg_len);
+            }
+
+            for _passno in 0..seg.num_passes {
+                if bpno_plus_one < 1 {
+                    break;
+                }
+
+                match passtype {
+                    0 => {
+                        if pass_type_byte == T1_TYPE_RAW {
+                            self.dec_sigpass_raw(&mut mqc, bpno_plus_one, cblksty);
+                        } else {
+                            self.dec_sigpass_mqc(&mut mqc, bpno_plus_one, cblksty);
+                        }
+                    }
+                    1 => {
+                        if pass_type_byte == T1_TYPE_RAW {
+                            self.dec_refpass_raw(&mut mqc, bpno_plus_one);
+                        } else {
+                            self.dec_refpass_mqc(&mut mqc, bpno_plus_one);
+                        }
+                    }
+                    2 => {
+                        self.dec_clnpass(&mut mqc, bpno_plus_one, cblksty);
+                    }
+                    _ => unreachable!(),
+                }
+
+                // Code-switch RESET
+                if (cblksty & J2K_CCP_CBLKSTY_RESET) != 0 && pass_type_byte == T1_TYPE_MQ {
+                    mqc.reset_states();
+                    mqc.set_state(T1_CTXNO_UNI, 0, 46);
+                    mqc.set_state(T1_CTXNO_AGG, 0, 3);
+                    mqc.set_state(T1_CTXNO_ZC, 0, 4);
+                }
+
+                passtype += 1;
+                if passtype == 3 {
+                    passtype = 0;
+                    bpno_plus_one -= 1;
+                }
+            }
+
+            mqc.finish_dec();
+            cblkdataindex += seg_len;
+        }
+
+        Ok(())
+    }
 }
 
 // --- Context helper functions ---
@@ -1760,5 +2112,185 @@ mod tests {
         // Other coefficients should remain 0
         assert_eq!(dec.data[1], 0, "(1,0) should be 0");
         assert_eq!(dec.data[5], 0, "(1,1) should be 0");
+    }
+
+    // --- t1_getwmsedec tests ---
+
+    #[test]
+    fn getwmsedec_qmfbid1_no_mct() {
+        // reversible 5-3, no MCT norms, orient=0, level=0, bpno=3
+        let w = t1_getwmsedec(1000, 0, 0, 0, 3, 1, 1.0, None);
+        // w1=1.0, w2=dwt_getnorm(0,0)=1.0, stepsize=1.0
+        // wmsedec = 1.0 * 1.0 * 1.0 * 8.0 = 8.0
+        // result = 8.0 * 8.0 * 1000.0 / 8192.0 = 7.8125
+        let expected = 1.0 * 1.0 * 1.0 * 8.0;
+        let expected = expected * expected * 1000.0 / 8192.0;
+        assert!((w - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn getwmsedec_qmfbid0_orient3() {
+        // irreversible 9-7, orient=3, log2_gain=2
+        let w = t1_getwmsedec(500, 0, 1, 3, 2, 0, 4.0, None);
+        // w1=1.0, w2=dwt_getnorm_real(1,3)
+        // stepsize = 4.0 / (1<<2) = 1.0
+        // wmsedec = 1.0 * w2 * 1.0 * 4.0
+        use crate::transform::dwt::dwt_getnorm_real;
+        let w2 = dwt_getnorm_real(1, 3);
+        let base = 1.0 * w2 * 1.0 * 4.0;
+        let expected = base * base * 500.0 / 8192.0;
+        assert!((w - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn getwmsedec_with_mct_norms() {
+        let norms = [0.5, 0.3, 0.7];
+        let w = t1_getwmsedec(100, 1, 0, 0, 1, 1, 1.0, Some(&norms));
+        use crate::transform::dwt::dwt_getnorm;
+        let w1 = 0.3;
+        let w2 = dwt_getnorm(0, 0);
+        let base = w1 * w2 * 1.0 * 2.0;
+        let expected = base * base * 100.0 / 8192.0;
+        assert!((w - expected).abs() < 1e-10);
+    }
+
+    // --- is_term_pass tests ---
+
+    #[test]
+    fn is_term_pass_last_cleanup() {
+        assert!(T1::is_term_pass(5, 0, 0, 2));
+    }
+
+    #[test]
+    fn is_term_pass_termall() {
+        assert!(T1::is_term_pass(5, J2K_CCP_CBLKSTY_TERMALL, 3, 0));
+        assert!(T1::is_term_pass(5, J2K_CCP_CBLKSTY_TERMALL, 3, 1));
+        assert!(T1::is_term_pass(5, J2K_CCP_CBLKSTY_TERMALL, 3, 2));
+    }
+
+    #[test]
+    fn is_term_pass_not_terminated_normal() {
+        assert!(!T1::is_term_pass(5, 0, 3, 0));
+        assert!(!T1::is_term_pass(5, 0, 3, 1));
+        assert!(!T1::is_term_pass(5, 0, 3, 2));
+    }
+
+    #[test]
+    fn is_term_pass_lazy() {
+        // numbps=8, lazy: 4th cleanup pass is at bpno = numbps-4 = 4
+        assert!(T1::is_term_pass(8, J2K_CCP_CBLKSTY_LAZY, 4, 2));
+        // Beyond (bpno < 4): refpass and clnpass terminated
+        assert!(T1::is_term_pass(8, J2K_CCP_CBLKSTY_LAZY, 3, 1));
+        assert!(T1::is_term_pass(8, J2K_CCP_CBLKSTY_LAZY, 3, 2));
+        // sigpass not terminated even below threshold
+        assert!(!T1::is_term_pass(8, J2K_CCP_CBLKSTY_LAZY, 3, 0));
+    }
+
+    // --- Multi-pass roundtrip test ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn multi_pass_roundtrip() {
+        // 1. Create a 4x4 block with known coefficients
+        let original: [i32; 16] = [
+            100, -50, 25, 0, -30, 60, -10, 5, 15, -20, 40, -35, 0, 70, -80, 45,
+        ];
+
+        let w = 4u32;
+        let h = 4u32;
+
+        // 2. Convert to zigzag SMR format shifted by FRACBITS.
+        //    Zigzag layout: col c stores data[c*4..c*4+4], where sub-indices
+        //    0..3 correspond to rows 0..3.
+        //    So zigzag[c * h + r] = original[r * w + c].
+        let mut zigzag_data = vec![0i32; (w * h) as usize];
+        for r in 0..h as usize {
+            for c in 0..w as usize {
+                let val = original[r * w as usize + c];
+                let shifted = val << T1_NMSEDEC_FRACBITS;
+                zigzag_data[c * h as usize + r] = shifted; // two's complement
+            }
+        }
+
+        // 3. Encode
+        let mut enc = T1::new(true);
+        enc.allocate_buffers(w, h).unwrap();
+        enc.data[..zigzag_data.len()].copy_from_slice(&zigzag_data);
+
+        let mut enc_buf = vec![0u8; 4096];
+        let (passes, cumwmsedec) = enc.encode_cblk(
+            &mut enc_buf,
+            0,    // orient (LL)
+            0,    // compno
+            0,    // level
+            1,    // qmfbid (5-3 reversible)
+            1.0,  // stepsize
+            0,    // cblksty (no special flags)
+            1,    // numcomps
+            None, // mct_norms
+        );
+
+        assert!(!passes.is_empty(), "should produce at least one pass");
+        assert!(
+            cumwmsedec >= 0.0,
+            "cumulative wmsedec should be non-negative"
+        );
+
+        // 4. Compute total encoded length and total passes
+        let total_rate = passes.last().unwrap().rate as usize;
+        let total_passes = passes.len() as u32;
+
+        // Extract encoded data: encoder writes from buf[1..1+total_rate]
+        let encoded_data = enc_buf[1..1 + total_rate].to_vec();
+
+        // 5. Decode: all passes in a single segment
+        let mut dec = T1::new(false);
+        dec.allocate_buffers(w, h).unwrap();
+
+        // The decoder needs the encoded data + COMMON_CBLK_DATA_EXTRA sentinel bytes
+        let mut dec_buf = vec![0u8; encoded_data.len() + COMMON_CBLK_DATA_EXTRA];
+        dec_buf[..encoded_data.len()].copy_from_slice(&encoded_data);
+
+        let segments = [DecodeSegment {
+            data: &dec_buf[..encoded_data.len()],
+            num_passes: total_passes,
+        }];
+
+        // Compute numbps the same way encode_cblk does
+        let max_abs = original.iter().map(|&v| v.abs()).max().unwrap();
+        let max_shifted = max_abs << T1_NMSEDEC_FRACBITS;
+        let numbps = if max_shifted != 0 {
+            (int_floorlog2(max_shifted) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+        } else {
+            0
+        };
+
+        dec.decode_cblk(&segments, 0, 0, numbps, 0).unwrap();
+
+        // 6. Convert decoded row-major data back.
+        //    Decoder data is in row-major: data[r * w + c].
+        //    Each value is in two's complement (not SMR) with the magnitude representing
+        //    the reconstructed coefficient shifted by some bitplane rounding.
+        // 7. Verify decoded values are close to original (within half-bit precision).
+        //    The decoder produces values with "one plus half" rounding at the last
+        //    decoded bitplane, so we compare with tolerance of 1 << (T1_NMSEDEC_FRACBITS - 1).
+        let tolerance = 1i32 << (T1_NMSEDEC_FRACBITS - 1); // half of the LSB bucket
+        for r in 0..h as usize {
+            for c in 0..w as usize {
+                let decoded = dec.data[r * w as usize + c];
+                let expected = original[r * w as usize + c] << T1_NMSEDEC_FRACBITS;
+                let diff = (decoded - expected).abs();
+                assert!(
+                    diff <= tolerance,
+                    "coefficient ({},{}) mismatch: decoded={}, expected={}, diff={}, tolerance={}",
+                    c,
+                    r,
+                    decoded,
+                    expected,
+                    diff,
+                    tolerance,
+                );
+            }
+        }
     }
 }
