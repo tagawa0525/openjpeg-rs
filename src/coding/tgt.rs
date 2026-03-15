@@ -115,6 +115,12 @@ impl TagTree {
 
     /// Set leaf value and propagate minimum upward (C: opj_tgt_setvalue).
     pub fn set_value(&mut self, leafno: u32, value: i32) {
+        debug_assert!(
+            (leafno as usize) < (self.numleafsh as usize) * (self.numleafsv as usize),
+            "leafno {leafno} out of range (numleafsh={}, numleafsv={})",
+            self.numleafsh,
+            self.numleafsv
+        );
         let mut idx = leafno as usize;
         while self.nodes[idx].value > value {
             self.nodes[idx].value = value;
