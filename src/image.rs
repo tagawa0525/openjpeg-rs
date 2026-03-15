@@ -45,7 +45,9 @@ impl Image {
         let comps = params
             .iter()
             .map(|p| {
-                let size = p.w as usize * p.h as usize;
+                let size = (p.w as usize)
+                    .checked_mul(p.h as usize)
+                    .expect("image component dimensions overflow usize");
                 ImageComp {
                     dx: p.dx,
                     dy: p.dy,
