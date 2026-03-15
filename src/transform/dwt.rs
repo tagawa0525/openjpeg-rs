@@ -28,11 +28,13 @@ pub fn dwt_getnorm(level: u32, orient: u32) -> f64 {
     } else {
         (level as usize).min(8)
     };
+    debug_assert!((orient as usize) < DWT_NORMS.len());
     DWT_NORMS[orient as usize][level]
 }
 
 /// Get 9-7 normalization coefficient (C: opj_dwt_getnorm_real).
 pub fn dwt_getnorm_real(level: u32, orient: u32) -> f64 {
+    debug_assert!((orient as usize) < DWT_NORMS_REAL.len());
     let level = if orient == 0 {
         (level as usize).min(9)
     } else {
