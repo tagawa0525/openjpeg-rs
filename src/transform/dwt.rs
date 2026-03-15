@@ -205,39 +205,67 @@ pub fn dwt_decode_1_97(data: &mut [f32], sn: usize, dn: usize, cas: bool) {
 ///
 /// `src`: interleaved input, `dst`: separated output.
 /// `sn`: low-pass count, `dn`: high-pass count, `cas`: subgrid parity.
-pub fn deinterleave_h<T: Copy>(_src: &[T], _dst: &mut [T], _sn: usize, _dn: usize, _cas: bool) {
-    todo!()
+pub fn deinterleave_h<T: Copy>(src: &[T], dst: &mut [T], sn: usize, dn: usize, cas: bool) {
+    let s_start = if cas { 1 } else { 0 }; // low-pass starts at this src offset
+    let d_start = 1 - s_start; // high-pass starts at this src offset
+    for i in 0..sn {
+        dst[i] = src[s_start + 2 * i];
+    }
+    for i in 0..dn {
+        dst[sn + i] = src[d_start + 2 * i];
+    }
 }
 
 /// Horizontal interleave: merge separated `[s0, s1, ..., d0, d1, ...]` back
 /// into interleaved `[s0, d0, s1, d1, ...]`.
-pub fn interleave_h<T: Copy>(_src: &[T], _dst: &mut [T], _sn: usize, _dn: usize, _cas: bool) {
-    todo!()
+pub fn interleave_h<T: Copy>(src: &[T], dst: &mut [T], sn: usize, dn: usize, cas: bool) {
+    let s_start = if cas { 1 } else { 0 };
+    let d_start = 1 - s_start;
+    for i in 0..sn {
+        dst[s_start + 2 * i] = src[i];
+    }
+    for i in 0..dn {
+        dst[d_start + 2 * i] = src[sn + i];
+    }
 }
 
 /// Vertical deinterleave: split interleaved column data (with stride) into
 /// separated low/high subbands.
 pub fn deinterleave_v<T: Copy>(
-    _src: &[T],
-    _dst: &mut [T],
-    _sn: usize,
-    _dn: usize,
-    _cas: bool,
-    _stride: usize,
+    src: &[T],
+    dst: &mut [T],
+    sn: usize,
+    dn: usize,
+    cas: bool,
+    stride: usize,
 ) {
-    todo!()
+    let s_row_start = if cas { stride } else { 0 };
+    let d_row_start = if cas { 0 } else { stride };
+    for i in 0..sn {
+        dst[i] = src[s_row_start + 2 * i * stride];
+    }
+    for i in 0..dn {
+        dst[sn + i] = src[d_row_start + 2 * i * stride];
+    }
 }
 
 /// Vertical interleave: merge separated subbands back into strided column data.
 pub fn interleave_v<T: Copy>(
-    _src: &[T],
-    _dst: &mut [T],
-    _sn: usize,
-    _dn: usize,
-    _cas: bool,
-    _stride: usize,
+    src: &[T],
+    dst: &mut [T],
+    sn: usize,
+    dn: usize,
+    cas: bool,
+    stride: usize,
 ) {
-    todo!()
+    let s_row_start = if cas { stride } else { 0 };
+    let d_row_start = if cas { 0 } else { stride };
+    for i in 0..sn {
+        dst[s_row_start + 2 * i * stride] = src[i];
+    }
+    for i in 0..dn {
+        dst[d_row_start + 2 * i * stride] = src[sn + i];
+    }
 }
 
 #[cfg(test)]
@@ -392,7 +420,6 @@ mod tests {
     // ==================== Deinterleave / Interleave tests ====================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn deinterleave_h_cas0() {
         // [s0, d0, s1, d1, s2, d2] → [s0, s1, s2, d0, d1, d2]
         let src = [10, 20, 30, 40, 50, 60];
@@ -402,7 +429,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn deinterleave_h_cas1() {
         // cas=1: [d0, s0, d1, s1, d2, s2] → [s0, s1, s2, d0, d1, d2]
         let src = [10, 20, 30, 40, 50, 60];
@@ -412,7 +438,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn interleave_h_cas0() {
         // [s0, s1, s2, d0, d1, d2] → [s0, d0, s1, d1, s2, d2]
         let src = [10, 30, 50, 20, 40, 60];
@@ -422,7 +447,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn deinterleave_interleave_h_roundtrip() {
         let original = [10, 20, 30, 40, 50, 60, 70];
         let mut separated = [0i32; 7];
@@ -433,7 +457,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn deinterleave_v_cas0() {
         // Column data with stride=4:
         // row 0: [s0, ...]  (even row → low-pass)
@@ -448,7 +471,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn interleave_v_cas0() {
         // [s0, s1, d0, d1] → column with stride=4
         let src = [10, 30, 20, 40];
