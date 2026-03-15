@@ -273,7 +273,8 @@ pub const J2K_CCP_CBLKSTY_SEGSYM: u32 = 0x20;
 /// Uses round-to-nearest instead of biased rounding.
 #[inline]
 pub fn int_fix_mul_t1(a: i32, b: i32) -> i32 {
-    todo!("int_fix_mul_t1 not yet implemented")
+    let temp = a as i64 * b as i64;
+    ((temp + (temp & 4096)) >> 13) as i32
 }
 
 #[cfg(test)]
@@ -496,7 +497,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_fix_mul_t1_basic() {
         // 1.0 * 1.0 = 1.0 in Q13
         assert_eq!(int_fix_mul_t1(8192, 8192), 8192);
@@ -506,7 +506,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_fix_mul_t1_rounding() {
         // int_fix_mul_t1 rounds to nearest (adds bit 12 before shift)
         // vs int_fix_mul which uses biased rounding (adds 4096)
