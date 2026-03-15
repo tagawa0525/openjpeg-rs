@@ -178,6 +178,9 @@ fn lift_step_97(
     right_delta: isize,
     c: f32,
 ) {
+    if count == 0 || nbr_count == 0 {
+        return;
+    }
     let max_idx = nbr_count as isize - 1;
     for i in 0..count {
         let li = (i as isize + left_delta).clamp(0, max_idx) as usize;
