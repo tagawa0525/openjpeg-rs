@@ -1,7 +1,6 @@
 type Handler = Box<dyn Fn(&str)>;
 
 /// Event (log) manager (C: opj_event_mgr_t).
-#[allow(dead_code)]
 pub struct EventManager {
     error_handler: Option<Handler>,
     warning_handler: Option<Handler>,
@@ -9,38 +8,52 @@ pub struct EventManager {
 }
 
 impl EventManager {
+    /// Create a new event manager with no handlers.
     pub fn new() -> Self {
-        todo!()
+        Self {
+            error_handler: None,
+            warning_handler: None,
+            info_handler: None,
+        }
     }
 
-    pub fn set_error_handler(&mut self, _handler: impl Fn(&str) + 'static) {
-        todo!()
+    pub fn set_error_handler(&mut self, handler: impl Fn(&str) + 'static) {
+        self.error_handler = Some(Box::new(handler));
     }
 
-    pub fn set_warning_handler(&mut self, _handler: impl Fn(&str) + 'static) {
-        todo!()
+    pub fn set_warning_handler(&mut self, handler: impl Fn(&str) + 'static) {
+        self.warning_handler = Some(Box::new(handler));
     }
 
-    pub fn set_info_handler(&mut self, _handler: impl Fn(&str) + 'static) {
-        todo!()
+    pub fn set_info_handler(&mut self, handler: impl Fn(&str) + 'static) {
+        self.info_handler = Some(Box::new(handler));
     }
 
-    pub fn error(&self, _msg: &str) {
-        todo!()
+    /// Send error message to handler (no-op if no handler set).
+    pub fn error(&self, msg: &str) {
+        if let Some(h) = &self.error_handler {
+            h(msg);
+        }
     }
 
-    pub fn warning(&self, _msg: &str) {
-        todo!()
+    /// Send warning message to handler (no-op if no handler set).
+    pub fn warning(&self, msg: &str) {
+        if let Some(h) = &self.warning_handler {
+            h(msg);
+        }
     }
 
-    pub fn info(&self, _msg: &str) {
-        todo!()
+    /// Send info message to handler (no-op if no handler set).
+    pub fn info(&self, msg: &str) {
+        if let Some(h) = &self.info_handler {
+            h(msg);
+        }
     }
 }
 
 impl Default for EventManager {
     fn default() -> Self {
-        todo!()
+        Self::new()
     }
 }
 
@@ -51,17 +64,14 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn default_no_handlers() {
         let mgr = EventManager::default();
-        // Should not panic even without handlers
         mgr.error("test error");
         mgr.warning("test warning");
         mgr.info("test info");
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn error_handler_called() {
         let messages = Rc::new(RefCell::new(Vec::new()));
         let msgs = messages.clone();
@@ -73,7 +83,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn warning_handler_called() {
         let messages = Rc::new(RefCell::new(Vec::new()));
         let msgs = messages.clone();
@@ -84,7 +93,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn info_handler_called() {
         let messages = Rc::new(RefCell::new(Vec::new()));
         let msgs = messages.clone();
@@ -95,7 +103,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn handlers_independent() {
         let errors = Rc::new(RefCell::new(Vec::new()));
         let infos = Rc::new(RefCell::new(Vec::new()));
@@ -108,7 +115,7 @@ mod tests {
 
         mgr.error("err1");
         mgr.info("info1");
-        mgr.warning("warn1"); // No handler, should be silent
+        mgr.warning("warn1");
 
         assert_eq!(errors.borrow().len(), 1);
         assert_eq!(infos.borrow().len(), 1);
