@@ -3,6 +3,44 @@
 
 use crate::error::Result;
 
+/// 5-3 normalization table (C: opj_dwt_norms). Indexed by [orient][level].
+#[rustfmt::skip]
+pub static DWT_NORMS: [[f64; 10]; 4] = [
+    [1.000, 1.500, 2.750, 5.375, 10.68, 21.34, 42.67, 85.33, 170.7, 341.3],
+    [1.038, 1.592, 2.919, 5.703, 11.33, 22.64, 45.25, 90.48, 180.9, 0.0],
+    [1.038, 1.592, 2.919, 5.703, 11.33, 22.64, 45.25, 90.48, 180.9, 0.0],
+    [0.7186, 0.9218, 1.586, 3.043, 6.019, 12.01, 24.00, 47.97, 95.93, 0.0],
+];
+
+/// 9-7 normalization table (C: opj_dwt_norms_real). Indexed by [orient][level].
+#[rustfmt::skip]
+pub static DWT_NORMS_REAL: [[f64; 10]; 4] = [
+    [1.000, 1.965, 4.177, 8.403, 16.90, 33.84, 67.69, 135.3, 270.6, 540.9],
+    [2.022, 3.989, 8.355, 17.04, 34.27, 68.63, 137.3, 274.6, 549.0, 0.0],
+    [2.022, 3.989, 8.355, 17.04, 34.27, 68.63, 137.3, 274.6, 549.0, 0.0],
+    [2.080, 3.865, 8.307, 17.18, 34.71, 69.59, 139.3, 278.6, 557.2, 0.0],
+];
+
+/// Get 5-3 normalization coefficient (C: opj_dwt_getnorm).
+pub fn dwt_getnorm(level: u32, orient: u32) -> f64 {
+    let level = if orient == 0 {
+        (level as usize).min(9)
+    } else {
+        (level as usize).min(8)
+    };
+    DWT_NORMS[orient as usize][level]
+}
+
+/// Get 9-7 normalization coefficient (C: opj_dwt_getnorm_real).
+pub fn dwt_getnorm_real(level: u32, orient: u32) -> f64 {
+    let level = if orient == 0 {
+        (level as usize).min(9)
+    } else {
+        (level as usize).min(8)
+    };
+    DWT_NORMS_REAL[orient as usize][level]
+}
+
 /// Forward 1D 5-3 lifting (in-place on interleaved data).
 ///
 /// Data layout: `[s0, d0, s1, d1, ...]` when `cas=false` (even origin),
@@ -749,6 +787,36 @@ mod tests {
         let mut data = original.clone();
         dwt_encode_2d_53(&mut data, 2, 2, 2, 1).unwrap();
         assert_eq!(data, original);
+    }
+
+    // ==================== Norm tests ====================
+
+    #[test]
+    fn dwt_norms_53_spot_check() {
+        assert!((dwt_getnorm(0, 0) - 1.0).abs() < 1e-10);
+        assert!((dwt_getnorm(1, 0) - 1.5).abs() < 1e-10);
+        assert!((dwt_getnorm(0, 1) - 1.038).abs() < 1e-10);
+        assert!((dwt_getnorm(0, 3) - 0.7186).abs() < 1e-10);
+    }
+
+    #[test]
+    fn dwt_norms_97_spot_check() {
+        assert!((dwt_getnorm_real(0, 0) - 1.0).abs() < 1e-10);
+        assert!((dwt_getnorm_real(0, 1) - 2.022).abs() < 1e-10);
+        assert!((dwt_getnorm_real(0, 3) - 2.080).abs() < 1e-10);
+    }
+
+    #[test]
+    fn dwt_norms_level_clamping() {
+        // orient=0: clamps at level 9
+        assert_eq!(dwt_getnorm(9, 0), dwt_getnorm(10, 0));
+        assert_eq!(dwt_getnorm(9, 0), dwt_getnorm(100, 0));
+        // orient>0: clamps at level 8
+        assert_eq!(dwt_getnorm(8, 1), dwt_getnorm(9, 1));
+        assert_eq!(dwt_getnorm(8, 1), dwt_getnorm(100, 1));
+        // Same for real norms
+        assert_eq!(dwt_getnorm_real(9, 0), dwt_getnorm_real(100, 0));
+        assert_eq!(dwt_getnorm_real(8, 2), dwt_getnorm_real(100, 2));
     }
 
     // ==================== 2D 9-7 tests ====================
