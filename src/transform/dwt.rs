@@ -357,28 +357,24 @@ pub fn dwt_encode_2d_53(
     validate_2d_params(data.len(), w, h, stride)?;
     // Resolution dimensions: level i has size ceil(w / 2^i), ceil(h / 2^i)
     // Process from finest to coarsest (level 0 = finest = num_res-1 decompositions)
-    let mut tmp = vec![0i32; w.max(h)];
+    let max_dim = w.max(h);
+    let mut tmp = vec![0i32; max_dim];
+    let mut separated = vec![0i32; max_dim];
     for level in (0..num_res - 1).rev() {
-        let rw = ((w - 1) >> level) + 1; // width at this resolution
+        let rw = ((w - 1) >> level) + 1;
         let rh = ((h - 1) >> level) + 1;
-        let rw1 = ((w - 1) >> (level + 1)) + 1; // width at next coarser
+        let rw1 = ((w - 1) >> (level + 1)) + 1;
         let rh1 = ((h - 1) >> (level + 1)) + 1;
-        let cas_col = 0usize; // y0 & 1, always 0 for our simplified API
-        let cas_row = 0usize; // x0 & 1
         let sn_v = rh1;
         let dn_v = rh - rh1;
 
-        // Vertical pass: for each column j, encode+deinterleave vertically
+        // Vertical pass
         for j in 0..rw {
-            // Gather column j into tmp (interleaved)
             for i in 0..rh {
                 tmp[i] = data[i * stride + j];
             }
-            dwt_encode_1_53(&mut tmp[..rh], sn_v, dn_v, cas_col != 0);
-            // Deinterleave: separate into low/high in column
-            let mut separated = vec![0i32; rh];
-            deinterleave_h(&tmp[..rh], &mut separated, sn_v, dn_v, cas_col != 0);
-            // Write back: low-pass rows first, then high-pass rows
+            dwt_encode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
+            deinterleave_h(&tmp[..rh], &mut separated[..rh], sn_v, dn_v, false);
             for i in 0..rh {
                 data[i * stride + j] = separated[i];
             }
@@ -387,14 +383,13 @@ pub fn dwt_encode_2d_53(
         let sn_h = rw1;
         let dn_h = rw - rw1;
 
-        // Horizontal pass: for each row i, encode+deinterleave horizontally
+        // Horizontal pass
         for i in 0..rh {
             let row_start = i * stride;
             tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
-            dwt_encode_1_53(&mut tmp[..rw], sn_h, dn_h, cas_row != 0);
-            let mut separated = vec![0i32; rw];
-            deinterleave_h(&tmp[..rw], &mut separated, sn_h, dn_h, cas_row != 0);
-            data[row_start..row_start + rw].copy_from_slice(&separated);
+            dwt_encode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
+            deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
+            data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
         }
     }
     Ok(())
@@ -412,40 +407,41 @@ pub fn dwt_decode_2d_53(
         return Ok(());
     }
     validate_2d_params(data.len(), w, h, stride)?;
-    let mut tmp = vec![0i32; w.max(h)];
-    // Process from coarsest to finest (reverse of encode)
+    let max_dim = w.max(h);
+    let mut tmp = vec![0i32; max_dim];
+    let mut separated = vec![0i32; max_dim];
     for level in 0..num_res - 1 {
         let rw = ((w - 1) >> level) + 1;
         let rh = ((h - 1) >> level) + 1;
         let rw1 = ((w - 1) >> (level + 1)) + 1;
         let rh1 = ((h - 1) >> (level + 1)) + 1;
-        let cas_col = 0usize;
-        let cas_row = 0usize;
         let sn_h = rw1;
         let dn_h = rw - rw1;
 
-        // Horizontal pass: interleave then decode for each row
+        // Horizontal pass
         for i in 0..rh {
             let row_start = i * stride;
-            // Interleave: separated → interleaved
-            let separated = &data[row_start..row_start + rw];
-            interleave_h(separated, &mut tmp[..rw], sn_h, dn_h, cas_row != 0);
-            dwt_decode_1_53(&mut tmp[..rw], sn_h, dn_h, cas_row != 0);
+            interleave_h(
+                &data[row_start..row_start + rw],
+                &mut tmp[..rw],
+                sn_h,
+                dn_h,
+                false,
+            );
+            dwt_decode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
             data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
         }
 
         let sn_v = rh1;
         let dn_v = rh - rh1;
 
-        // Vertical pass: interleave then decode for each column
+        // Vertical pass
         for j in 0..rw {
-            // Gather separated column
-            let mut separated = vec![0i32; rh];
             for i in 0..rh {
                 separated[i] = data[i * stride + j];
             }
-            interleave_h(&separated, &mut tmp[..rh], sn_v, dn_v, cas_col != 0);
-            dwt_decode_1_53(&mut tmp[..rh], sn_v, dn_v, cas_col != 0);
+            interleave_h(&separated[..rh], &mut tmp[..rh], sn_v, dn_v, false);
+            dwt_decode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
             for i in 0..rh {
                 data[i * stride + j] = tmp[i];
             }
@@ -465,7 +461,9 @@ pub fn dwt_encode_2d_97(
         return Ok(());
     }
     validate_2d_params(data.len(), w, h, stride)?;
-    let mut tmp = vec![0.0f32; w.max(h)];
+    let max_dim = w.max(h);
+    let mut tmp = vec![0.0f32; max_dim];
+    let mut separated = vec![0.0f32; max_dim];
     for level in (0..num_res - 1).rev() {
         let rw = ((w - 1) >> level) + 1;
         let rh = ((h - 1) >> level) + 1;
@@ -480,8 +478,7 @@ pub fn dwt_encode_2d_97(
                 tmp[i] = data[i * stride + j];
             }
             dwt_encode_1_97(&mut tmp[..rh], sn_v, dn_v, false);
-            let mut separated = vec![0.0f32; rh];
-            deinterleave_h(&tmp[..rh], &mut separated, sn_v, dn_v, false);
+            deinterleave_h(&tmp[..rh], &mut separated[..rh], sn_v, dn_v, false);
             for i in 0..rh {
                 data[i * stride + j] = separated[i];
             }
@@ -495,9 +492,8 @@ pub fn dwt_encode_2d_97(
             let row_start = i * stride;
             tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
             dwt_encode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
-            let mut separated = vec![0.0f32; rw];
-            deinterleave_h(&tmp[..rw], &mut separated, sn_h, dn_h, false);
-            data[row_start..row_start + rw].copy_from_slice(&separated);
+            deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
+            data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
         }
     }
     Ok(())
@@ -515,7 +511,9 @@ pub fn dwt_decode_2d_97(
         return Ok(());
     }
     validate_2d_params(data.len(), w, h, stride)?;
-    let mut tmp = vec![0.0f32; w.max(h)];
+    let max_dim = w.max(h);
+    let mut tmp = vec![0.0f32; max_dim];
+    let mut separated = vec![0.0f32; max_dim];
     for level in 0..num_res - 1 {
         let rw = ((w - 1) >> level) + 1;
         let rh = ((h - 1) >> level) + 1;
@@ -527,8 +525,13 @@ pub fn dwt_decode_2d_97(
         // Horizontal pass
         for i in 0..rh {
             let row_start = i * stride;
-            let separated = &data[row_start..row_start + rw];
-            interleave_h(separated, &mut tmp[..rw], sn_h, dn_h, false);
+            interleave_h(
+                &data[row_start..row_start + rw],
+                &mut tmp[..rw],
+                sn_h,
+                dn_h,
+                false,
+            );
             dwt_decode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
             data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
         }
@@ -538,11 +541,10 @@ pub fn dwt_decode_2d_97(
 
         // Vertical pass
         for j in 0..rw {
-            let mut separated = vec![0.0f32; rh];
             for i in 0..rh {
                 separated[i] = data[i * stride + j];
             }
-            interleave_h(&separated, &mut tmp[..rh], sn_v, dn_v, false);
+            interleave_h(&separated[..rh], &mut tmp[..rh], sn_v, dn_v, false);
             dwt_decode_1_97(&mut tmp[..rh], sn_v, dn_v, false);
             for i in 0..rh {
                 data[i * stride + j] = tmp[i];
