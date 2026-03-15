@@ -132,7 +132,7 @@ impl TagTree {
     }
 
     /// Encode a leaf value up to threshold (C: opj_tgt_encode).
-    pub fn encode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) {
+    pub fn encode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) -> Result<()> {
         // Walk from leaf to root, collect path
         let mut stack = Vec::new();
         let mut idx = leafno as usize;
@@ -153,12 +153,12 @@ impl TagTree {
             while low < threshold {
                 if low >= self.nodes[idx].value {
                     if !self.nodes[idx].known {
-                        bio.write(1, 1).unwrap();
+                        bio.write(1, 1)?;
                         self.nodes[idx].known = true;
                     }
                     break;
                 }
-                bio.write(0, 1).unwrap();
+                bio.write(0, 1)?;
                 low += 1;
             }
 
@@ -168,6 +168,7 @@ impl TagTree {
                 None => break,
             }
         }
+        Ok(())
     }
 
     /// Decode a leaf value up to threshold (C: opj_tgt_decode).
@@ -265,7 +266,7 @@ mod tests {
         let mut buf = [0u8; 16];
         {
             let mut bio = Bio::encoder(&mut buf);
-            tree.encode(&mut bio, 0, 4);
+            tree.encode(&mut bio, 0, 4).unwrap();
             bio.flush().unwrap();
         }
 
@@ -289,7 +290,7 @@ mod tests {
         {
             let mut bio = Bio::encoder(&mut buf);
             for leaf in 0..4 {
-                tree.encode(&mut bio, leaf, 6);
+                tree.encode(&mut bio, leaf, 6).unwrap();
             }
             bio.flush().unwrap();
         }
@@ -311,7 +312,7 @@ mod tests {
         let mut buf = [0u8; 16];
         {
             let mut bio = Bio::encoder(&mut buf);
-            tree.encode(&mut bio, 0, 3);
+            tree.encode(&mut bio, 0, 3).unwrap();
             bio.flush().unwrap();
         }
 
@@ -335,10 +336,10 @@ mod tests {
         {
             let mut bio = Bio::encoder(&mut buf);
             for leaf in 0..4 {
-                enc_tree.encode(&mut bio, leaf, 1);
+                enc_tree.encode(&mut bio, leaf, 1).unwrap();
             }
             for leaf in 0..4 {
-                enc_tree.encode(&mut bio, leaf, 4);
+                enc_tree.encode(&mut bio, leaf, 4).unwrap();
             }
             bio.flush().unwrap();
         }
