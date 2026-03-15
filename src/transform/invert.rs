@@ -8,6 +8,15 @@ use crate::error::{Error, Result};
 /// `dst` receives the inverse matrix.
 /// Returns `Err` if the matrix is singular.
 pub fn matrix_inversion_f(src: &mut [f32], dst: &mut [f32], n: usize) -> Result<()> {
+    if n == 0 {
+        return Ok(());
+    }
+    let nn = n * n;
+    if src.len() < nn || dst.len() < nn {
+        return Err(Error::InvalidInput(
+            "buffer too small for n×n matrix".into(),
+        ));
+    }
     let mut permutations = vec![0u32; n];
     if !lup_decompose(src, &mut permutations, n) {
         return Err(Error::InvalidInput("singular matrix".into()));
