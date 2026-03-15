@@ -172,8 +172,8 @@ impl TagTree {
     }
 
     /// Decode a leaf value up to threshold (C: opj_tgt_decode).
-    /// Returns 1 if value < threshold, 0 otherwise.
-    pub fn decode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) -> u32 {
+    /// Returns Ok(1) if value < threshold, Ok(0) otherwise.
+    pub fn decode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) -> Result<u32> {
         // Walk from leaf to root, collect path
         let mut stack = Vec::new();
         let mut idx = leafno as usize;
@@ -191,7 +191,7 @@ impl TagTree {
             }
 
             while low < threshold && low < self.nodes[idx].value {
-                if bio.read(1).unwrap() != 0 {
+                if bio.read(1)? != 0 {
                     self.nodes[idx].value = low;
                 } else {
                     low += 1;
@@ -205,11 +205,11 @@ impl TagTree {
             }
         }
 
-        if self.nodes[idx].value < threshold {
+        Ok(if self.nodes[idx].value < threshold {
             1
         } else {
             0
-        }
+        })
     }
 }
 
@@ -273,7 +273,7 @@ mod tests {
         let mut dec_tree = TagTree::new(1, 1);
         {
             let mut bio = Bio::decoder(&mut buf);
-            let below = dec_tree.decode(&mut bio, 0, 4);
+            let below = dec_tree.decode(&mut bio, 0, 4).unwrap();
             assert_eq!(below, 1);
         }
     }
@@ -299,7 +299,7 @@ mod tests {
         {
             let mut bio = Bio::decoder(&mut buf);
             for leaf in 0..4 {
-                dec_tree.decode(&mut bio, leaf, 6);
+                dec_tree.decode(&mut bio, leaf, 6).unwrap();
             }
         }
     }
@@ -319,7 +319,7 @@ mod tests {
         let mut dec_tree = TagTree::new(1, 1);
         {
             let mut bio = Bio::decoder(&mut buf);
-            let below = dec_tree.decode(&mut bio, 0, 3);
+            let below = dec_tree.decode(&mut bio, 0, 3).unwrap();
             assert_eq!(below, 0);
         }
     }
@@ -348,10 +348,10 @@ mod tests {
         {
             let mut bio = Bio::decoder(&mut buf);
             for leaf in 0..4 {
-                dec_tree.decode(&mut bio, leaf, 1);
+                dec_tree.decode(&mut bio, leaf, 1).unwrap();
             }
             for leaf in 0..4 {
-                dec_tree.decode(&mut bio, leaf, 4);
+                dec_tree.decode(&mut bio, leaf, 4).unwrap();
             }
         }
     }
