@@ -119,23 +119,23 @@ pub fn read_bytes_be(buf: &[u8], n: usize) -> u32 {
 }
 
 /// Write f64 as big-endian (C: opj_write_double_BE).
-pub fn write_f64_be(buf: &mut [u8], val: f64) {
-    buf[..8].copy_from_slice(&val.to_be_bytes());
+pub fn write_f64_be(buf: &mut [u8; 8], val: f64) {
+    *buf = val.to_be_bytes();
 }
 
 /// Read f64 from big-endian (C: opj_read_double_BE).
-pub fn read_f64_be(buf: &[u8]) -> f64 {
-    f64::from_be_bytes(buf[..8].try_into().unwrap())
+pub fn read_f64_be(buf: &[u8; 8]) -> f64 {
+    f64::from_be_bytes(*buf)
 }
 
 /// Write f32 as big-endian (C: opj_write_float_BE).
-pub fn write_f32_be(buf: &mut [u8], val: f32) {
-    buf[..4].copy_from_slice(&val.to_be_bytes());
+pub fn write_f32_be(buf: &mut [u8; 4], val: f32) {
+    *buf = val.to_be_bytes();
 }
 
 /// Read f32 from big-endian (C: opj_read_float_BE).
-pub fn read_f32_be(buf: &[u8]) -> f32 {
-    f32::from_be_bytes(buf[..4].try_into().unwrap())
+pub fn read_f32_be(buf: &[u8; 4]) -> f32 {
+    f32::from_be_bytes(*buf)
 }
 
 #[cfg(test)]
