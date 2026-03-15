@@ -53,12 +53,11 @@ C版 `opj_common.h` + `openjpeg.h` の定数マクロ。
 | `OPJ_J2K_MAXBANDS`                                | `J2K_MAXBANDS`                        | `3 * J2K_MAXRLVLS - 2` |
 | `OPJ_J2K_DEFAULT_NB_SEGS`                         | `J2K_DEFAULT_NB_SEGS`                 | 10                     |
 | `OPJ_J2K_STREAM_CHUNK_SIZE`                       | `J2K_STREAM_CHUNK_SIZE`               | 0x100000               |
-| `OPJ_J2K_DEFAULT_CBLK_DATA_SIZE`                  | `J2K_DEFAULT_CBLK_DATA_SIZE`          | 8192                   |
 | `OPJ_PATH_LEN`                                    | `PATH_LEN`                            | 4096                   |
 | `OPJ_IMG_INFO`                                    | `IMG_INFO`                            | 1                      |
 | `OPJ_J2K_MH_INFO` / `OPJ_J2K_TH_INFO`             | `J2K_MH_INFO` / `J2K_TH_INFO`         | 2 / 4                  |
 | `OPJ_J2K_TCH_INFO` / `OPJ_J2K_MH_IND`             | `J2K_TCH_INFO` / `J2K_MH_IND`         | 8 / 16                 |
-| `OPJ_J2K_TH_IND` / `OPJ_JP2_INFO` / `OPJ_JP2_IND` | `J2K_TH_IND` / `JP2_INFO` / `JP2_IND` | 32 / 64 / 128          |
+| `OPJ_J2K_TH_IND` / `OPJ_JP2_INFO` / `OPJ_JP2_IND` | `J2K_TH_IND` / `JP2_INFO` / `JP2_IND` | 32 / 128 / 256         |
 | `OPJ_COMMON_CBLK_DATA_EXTRA`                      | `COMMON_CBLK_DATA_EXTRA`              | 2                      |
 | `OPJ_COMP_PARAM_DEFAULT_CBLOCKW`                  | `COMP_PARAM_DEFAULT_CBLOCKW`          | 64                     |
 | `OPJ_COMP_PARAM_DEFAULT_CBLOCKH`                  | `COMP_PARAM_DEFAULT_CBLOCKH`          | 64                     |
@@ -154,20 +153,20 @@ pub struct MemoryStream {
 
 バイトオーダー変換関数（C版の `opj_read_bytes` / `opj_write_bytes`）はJPEG 2000がビッグエンディアン固定のため、`u32::from_be_bytes` / `u32::to_be_bytes` で代替。
 
-| C版関数                           | Rustメソッド/関数                         |
-| --------------------------------- | ----------------------------------------- |
-| `opj_stream_create`               | `MemoryStream::new()`                     |
-| `opj_stream_read_data`            | `stream.read(buf)` → `Result<usize>`      |
-| `opj_stream_write_data`           | `stream.write(buf)` → `Result<usize>`     |
-| `opj_stream_skip`                 | `stream.skip(n)` → `Result<()>`           |
-| `opj_stream_seek`                 | `stream.seek(pos)` → `Result<()>`         |
-| `opj_stream_tell`                 | `stream.tell()` → `usize`                 |
-| `opj_stream_get_number_byte_left` | `stream.bytes_left()` → `usize`           |
-| `opj_stream_flush`                | `stream.flush()` → `Result<()>`           |
-| `opj_write_bytes_BE/LE`           | `cio::write_bytes_be(buf, val, n)`        |
-| `opj_read_bytes_BE/LE`            | `cio::read_bytes_be(buf, n)` → `u32`      |
-| `opj_write_double/float`          | `cio::write_f64_be` / `cio::write_f32_be` |
-| `opj_read_double/float`           | `cio::read_f64_be` / `cio::read_f32_be`   |
+| C版関数                           | Rustメソッド/関数                            |
+| --------------------------------- | -------------------------------------------- |
+| `opj_stream_create`               | `MemoryStream::new_input()` / `new_output()` |
+| `opj_stream_read_data`            | `stream.read(buf)` → `Result<usize>`         |
+| `opj_stream_write_data`           | `stream.write(buf)` → `Result<usize>`        |
+| `opj_stream_skip`                 | `stream.skip(n)` → `Result<()>`              |
+| `opj_stream_seek`                 | `stream.seek(pos)` → `Result<()>`            |
+| `opj_stream_tell`                 | `stream.tell()` → `usize`                    |
+| `opj_stream_get_number_byte_left` | `stream.bytes_left()` → `usize`              |
+| `opj_stream_flush`                | （不要: MemoryStream はインメモリ）          |
+| `opj_write_bytes_BE/LE`           | `cio::write_bytes_be(buf, val, n)`           |
+| `opj_read_bytes_BE/LE`            | `cio::read_bytes_be(buf, n)` → `u32`         |
+| `opj_write_double/float`          | `cio::write_f64_be` / `cio::write_f32_be`    |
+| `opj_read_double/float`           | `cio::read_f64_be` / `cio::read_f32_be`      |
 
 C版の内部バッファリング（`m_stored_data`、`m_buffer_size`）は `MemoryStream` では不要（全データがメモリ上）。Phase 600で `Stream` trait を導入する際にバッファリング戦略を再検討。
 
@@ -216,9 +215,8 @@ pub struct Image {
     pub y0: u32,
     pub x1: u32,
     pub y1: u32,
-    pub numcomps: u32,
     pub color_space: ColorSpace,
-    pub comps: Vec<ImageComp>,
+    pub comps: Vec<ImageComp>, // numcomps は comps.len() で取得
     pub icc_profile: Vec<u8>,
 }
 ```
