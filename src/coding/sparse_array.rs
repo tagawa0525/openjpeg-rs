@@ -20,7 +20,10 @@ pub struct SparseArray {
 impl SparseArray {
     /// Create a new sparse array (C: opj_sparse_array_int32_create).
     pub fn new(width: u32, height: u32, block_width: u32, block_height: u32) -> Self {
-        debug_assert!(width > 0 && height > 0 && block_width > 0 && block_height > 0);
+        assert!(
+            width > 0 && height > 0 && block_width > 0 && block_height > 0,
+            "SparseArray dimensions and block sizes must be non-zero"
+        );
         let bch = uint_ceildiv(width, block_width);
         let bcv = uint_ceildiv(height, block_height);
         let total = (bch as usize) * (bcv as usize);
