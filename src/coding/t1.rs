@@ -111,17 +111,232 @@ impl T1 {
         self.lut_ctxno_zc_orient_offset = (orient as usize) << 9;
     }
 
+    // --- Encoding step helpers ---
+
+    /// Significance pass step (encoder) for one coefficient.
+    #[allow(clippy::too_many_arguments)]
+    fn enc_sigpass_step(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        bpno: i32,
+        one: u32,
+        nmsedec: &mut i32,
+        pass_type: u8,
+        ci: u32,
+        vsc: bool,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == 0
+            && (flags & (T1_SIGMA_NEIGHBOURS << shift)) != 0
+        {
+            let ctxt1 = getctxno_zc(self.lut_ctxno_zc_orient_offset, flags >> shift) as usize;
+            let v = if (smr_abs(self.data[datap]) & one) != 0 {
+                1u32
+            } else {
+                0u32
+            };
+            mqc.set_curctx(ctxt1);
+            if pass_type == T1_TYPE_RAW {
+                mqc.bypass_enc(v);
+            } else {
+                mqc.encode(v);
+            }
+            if v != 0 {
+                let lu = getctxtno_sc_or_spb_index(
+                    self.flags[fp],
+                    self.flags[fp - 1],
+                    self.flags[fp + 1],
+                    ci,
+                );
+                let ctxt2 = getctxno_sc(lu) as usize;
+                let sign = smr_sign(self.data[datap]);
+                *nmsedec += getnmsedec_sig(smr_abs(self.data[datap]), bpno as u32) as i32;
+                mqc.set_curctx(ctxt2);
+                if pass_type == T1_TYPE_RAW {
+                    mqc.bypass_enc(sign);
+                } else {
+                    let spb = getspb(lu) as u32;
+                    mqc.encode(sign ^ spb);
+                }
+                let stride = self.flags_stride();
+                update_flags(&mut self.flags, fp, ci, sign, stride, vsc);
+            }
+            self.flags[fp] |= T1_PI_THIS << shift;
+        }
+    }
+
     // --- Encoding passes ---
 
     /// Significance pass encoder (C: opj_t1_enc_sigpass).
     pub fn enc_sigpass(
         &mut self,
-        _mqc: &mut crate::coding::mqc::Mqc,
-        _bpno: i32,
-        _pass_type: u8,
-        _cblksty: u32,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno: i32,
+        pass_type: u8,
+        cblksty: u32,
     ) -> i32 {
-        todo!()
+        let mut nmsedec = 0i32;
+        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1; // T1_FLAGS(0, 0)
+
+        // Full 4-row strips
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    let vsc0 = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
+                    self.enc_sigpass_step(
+                        mqc,
+                        fp,
+                        datap,
+                        bpno,
+                        one,
+                        &mut nmsedec,
+                        pass_type,
+                        0,
+                        vsc0,
+                    );
+                    self.enc_sigpass_step(
+                        mqc,
+                        fp,
+                        datap + 1,
+                        bpno,
+                        one,
+                        &mut nmsedec,
+                        pass_type,
+                        1,
+                        false,
+                    );
+                    self.enc_sigpass_step(
+                        mqc,
+                        fp,
+                        datap + 2,
+                        bpno,
+                        one,
+                        &mut nmsedec,
+                        pass_type,
+                        2,
+                        false,
+                    );
+                    self.enc_sigpass_step(
+                        mqc,
+                        fp,
+                        datap + 3,
+                        bpno,
+                        one,
+                        &mut nmsedec,
+                        pass_type,
+                        3,
+                        false,
+                    );
+                }
+                datap += 4;
+                fp += 1;
+            }
+            fp += 2; // skip border columns
+        }
+
+        // Remaining rows
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    for j in k..h {
+                        let ci = (j - k) as u32;
+                        let vsc = ci == 0 && (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
+                        self.enc_sigpass_step(
+                            mqc,
+                            fp,
+                            datap,
+                            bpno,
+                            one,
+                            &mut nmsedec,
+                            pass_type,
+                            ci,
+                            vsc,
+                        );
+                        datap += 1;
+                    }
+                } else {
+                    datap += h - k;
+                }
+                fp += 1;
+            }
+        }
+
+        nmsedec
+    }
+
+    // --- Decoding step helpers ---
+
+    fn dec_sigpass_step_mqc(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        oneplushalf: i32,
+        ci: u32,
+        vsc: bool,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == 0
+            && (flags & (T1_SIGMA_NEIGHBOURS << shift)) != 0
+        {
+            let ctxt1 = getctxno_zc(self.lut_ctxno_zc_orient_offset, flags >> shift) as usize;
+            mqc.set_curctx(ctxt1);
+            let v = mqc.decode();
+            if v != 0 {
+                let lu = getctxtno_sc_or_spb_index(
+                    self.flags[fp],
+                    self.flags[fp - 1],
+                    self.flags[fp + 1],
+                    ci,
+                );
+                let ctxt2 = getctxno_sc(lu) as usize;
+                let spb = getspb(lu) as u32;
+                mqc.set_curctx(ctxt2);
+                let sign = mqc.decode() ^ spb;
+                self.data[datap] = if sign != 0 { -oneplushalf } else { oneplushalf };
+                let stride = self.flags_stride();
+                update_flags(&mut self.flags, fp, ci, sign, stride, vsc);
+            }
+            self.flags[fp] |= T1_PI_THIS << shift;
+        }
+    }
+
+    fn dec_sigpass_step_raw(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        oneplushalf: i32,
+        ci: u32,
+        vsc: bool,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == 0
+            && (flags & (T1_SIGMA_NEIGHBOURS << shift)) != 0
+        {
+            if mqc.raw_decode() != 0 {
+                let v = mqc.raw_decode();
+                self.data[datap] = if v != 0 { -oneplushalf } else { oneplushalf };
+                let stride = self.flags_stride();
+                update_flags(&mut self.flags, fp, ci, v, stride, vsc);
+            }
+            self.flags[fp] |= T1_PI_THIS << shift;
+        }
     }
 
     // --- Decoding passes ---
@@ -129,21 +344,95 @@ impl T1 {
     /// Significance pass decoder, MQ mode (C: opj_t1_dec_sigpass_mqc).
     pub fn dec_sigpass_mqc(
         &mut self,
-        _mqc: &mut crate::coding::mqc::Mqc,
-        _bpno_plus_one: i32,
-        _cblksty: u32,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno_plus_one: i32,
+        cblksty: u32,
     ) {
-        todo!()
+        let one = 1i32 << (bpno_plus_one - 1);
+        let half = one >> 1;
+        let oneplushalf = one | half;
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+        let vsc_flag = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
+
+        let mut datap = 0usize; // row-major: data[row * w + col]
+        let mut fp = stride + 1;
+
+        // Full 4-row strips
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    self.dec_sigpass_step_mqc(mqc, fp, datap, oneplushalf, 0, vsc_flag);
+                    self.dec_sigpass_step_mqc(mqc, fp, datap + w, oneplushalf, 1, false);
+                    self.dec_sigpass_step_mqc(mqc, fp, datap + 2 * w, oneplushalf, 2, false);
+                    self.dec_sigpass_step_mqc(mqc, fp, datap + 3 * w, oneplushalf, 3, false);
+                }
+                datap += 1;
+                fp += 1;
+            }
+            datap += 3 * w; // advance past the 3 remaining rows of this strip
+            fp += 2;
+        }
+
+        // Remaining rows
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                for j in 0..(h - k) {
+                    let vsc = j == 0 && vsc_flag;
+                    self.dec_sigpass_step_mqc(mqc, fp, datap + j * w, oneplushalf, j as u32, vsc);
+                }
+                datap += 1;
+                fp += 1;
+            }
+        }
     }
 
     /// Significance pass decoder, RAW mode (C: opj_t1_dec_sigpass_raw).
     pub fn dec_sigpass_raw(
         &mut self,
-        _mqc: &mut crate::coding::mqc::Mqc,
-        _bpno_plus_one: i32,
-        _cblksty: u32,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno_plus_one: i32,
+        cblksty: u32,
     ) {
-        todo!()
+        let one = 1i32 << (bpno_plus_one - 1);
+        let half = one >> 1;
+        let oneplushalf = one | half;
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+        let vsc_flag = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    self.dec_sigpass_step_raw(mqc, fp, datap, oneplushalf, 0, vsc_flag);
+                    self.dec_sigpass_step_raw(mqc, fp, datap + w, oneplushalf, 1, false);
+                    self.dec_sigpass_step_raw(mqc, fp, datap + 2 * w, oneplushalf, 2, false);
+                    self.dec_sigpass_step_raw(mqc, fp, datap + 3 * w, oneplushalf, 3, false);
+                }
+                datap += 1;
+                fp += 1;
+            }
+            datap += 3 * w;
+            fp += 2;
+        }
+
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                for j in 0..(h - k) {
+                    let vsc = j == 0 && vsc_flag;
+                    self.dec_sigpass_step_raw(mqc, fp, datap + j * w, oneplushalf, j as u32, vsc);
+                }
+                datap += 1;
+                fp += 1;
+            }
+        }
     }
 }
 
@@ -664,7 +953,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn sigpass_encode_decode_roundtrip() {
         use crate::coding::mqc::Mqc;
 
@@ -689,6 +977,7 @@ mod tests {
         enc.data[4] = one; // positive, SMR same as two's complement
 
         let mut enc_buf = vec![0u8; 256];
+        let num_bytes;
         {
             let mut mqc = Mqc::new(&mut enc_buf);
             init_t1_mqc_contexts(&mut mqc);
@@ -696,15 +985,11 @@ mod tests {
             let nmsedec = enc.enc_sigpass(&mut mqc, bpno, T1_TYPE_MQ, 0);
             mqc.flush();
             assert!(nmsedec >= 0);
-            assert!(mqc.num_bytes() > 0);
+            num_bytes = mqc.num_bytes();
+            assert!(num_bytes > 0);
         }
 
         // --- Decode ---
-        let num_bytes;
-        {
-            let mqc = Mqc::new(&mut enc_buf);
-            num_bytes = mqc.num_bytes();
-        }
         // Extract encoded data (encoder writes starting at buf[1])
         let mut dec_buf = vec![0u8; 256];
         dec_buf[..num_bytes].copy_from_slice(&enc_buf[1..1 + num_bytes]);
