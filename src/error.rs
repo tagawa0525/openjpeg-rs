@@ -12,8 +12,13 @@ pub enum Error {
 }
 
 impl std::fmt::Display for Error {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
+            Error::BufferTooSmall => write!(f, "buffer too small"),
+            Error::EndOfStream => write!(f, "end of stream"),
+            Error::IoError(msg) => write!(f, "I/O error: {msg}"),
+        }
     }
 }
 
@@ -27,7 +32,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn error_display() {
         let err = Error::InvalidInput("test".to_string());
         let msg = format!("{err}");
@@ -35,14 +39,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn error_std_error() {
         let err = Error::InvalidInput("test".to_string());
         let _: &dyn std::error::Error = &err;
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn error_variants() {
         let _ = Error::InvalidInput("msg".to_string());
         let _ = Error::BufferTooSmall;
@@ -51,7 +53,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn result_type_alias() {
         let ok: Result<i32> = Ok(42);
         assert!(ok.is_ok());

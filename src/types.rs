@@ -2,26 +2,44 @@
 
 // --- Constants ---
 
+/// Maximum number of resolution levels (C: OPJ_J2K_MAXRLVLS).
 pub const J2K_MAXRLVLS: usize = 33;
+/// Maximum number of sub-bands (C: OPJ_J2K_MAXBANDS).
 pub const J2K_MAXBANDS: usize = 3 * J2K_MAXRLVLS - 2;
+/// Default number of segments (C: OPJ_J2K_DEFAULT_NB_SEGS).
 pub const J2K_DEFAULT_NB_SEGS: u32 = 10;
+/// Default stream chunk size: 1 MB (C: OPJ_J2K_STREAM_CHUNK_SIZE).
 pub const J2K_STREAM_CHUNK_SIZE: usize = 0x100000;
+/// Maximum path length (C: OPJ_PATH_LEN).
 pub const PATH_LEN: usize = 4096;
+/// Basic image information flag (C: OPJ_IMG_INFO).
 pub const IMG_INFO: u32 = 1;
+/// Main header info flag (C: OPJ_J2K_MH_INFO).
 pub const J2K_MH_INFO: u32 = 2;
+/// Tile header info flag (C: OPJ_J2K_TH_INFO).
 pub const J2K_TH_INFO: u32 = 4;
+/// Tile/component info flag (C: OPJ_J2K_TCH_INFO).
 pub const J2K_TCH_INFO: u32 = 8;
+/// Main header index flag (C: OPJ_J2K_MH_IND).
 pub const J2K_MH_IND: u32 = 16;
+/// Tile header index flag (C: OPJ_J2K_TH_IND).
 pub const J2K_TH_IND: u32 = 32;
+/// JP2 info flag (C: OPJ_JP2_INFO).
 pub const JP2_INFO: u32 = 128;
+/// JP2 index flag (C: OPJ_JP2_IND).
 pub const JP2_IND: u32 = 256;
+/// Margin for fake FFFF marker (C: OPJ_COMMON_CBLK_DATA_EXTRA).
 pub const COMMON_CBLK_DATA_EXTRA: usize = 2;
+/// Default code block width (C: OPJ_COMP_PARAM_DEFAULT_CBLOCKW).
 pub const COMP_PARAM_DEFAULT_CBLOCKW: u32 = 64;
+/// Default code block height (C: OPJ_COMP_PARAM_DEFAULT_CBLOCKH).
 pub const COMP_PARAM_DEFAULT_CBLOCKH: u32 = 64;
+/// Default number of resolution levels (C: OPJ_COMP_PARAM_DEFAULT_NUMRESOLUTION).
 pub const COMP_PARAM_DEFAULT_NUMRESOLUTION: u32 = 6;
 
-// --- Enums (stub) ---
+// --- Enums ---
 
+/// Progression order (C: OPJ_PROG_ORDER).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ProgressionOrder {
@@ -32,6 +50,7 @@ pub enum ProgressionOrder {
     Cprl = 4,
 }
 
+/// Color space (C: OPJ_COLOR_SPACE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ColorSpace {
@@ -44,6 +63,7 @@ pub enum ColorSpace {
     Cmyk = 5,
 }
 
+/// Codec format (C: OPJ_CODEC_FORMAT).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum CodecFormat {
@@ -53,56 +73,69 @@ pub enum CodecFormat {
     Jp2 = 2,
 }
 
-// --- Integer math (stubs) ---
+// --- Integer math ---
 
+/// Ceiling division for signed integers (C: opj_int_ceildiv).
 #[inline]
-pub fn int_ceildiv(_a: i32, _b: i32) -> i32 {
-    todo!()
+pub fn int_ceildiv(a: i32, b: i32) -> i32 {
+    ((a as i64 + b as i64 - 1) / b as i64) as i32
 }
 
+/// Ceiling division for unsigned integers (C: opj_uint_ceildiv).
 #[inline]
-pub fn uint_ceildiv(_a: u32, _b: u32) -> u32 {
-    todo!()
+pub fn uint_ceildiv(a: u32, b: u32) -> u32 {
+    (a as u64).div_ceil(b as u64) as u32
 }
 
+/// Ceiling division of u64 returning u32 (C: opj_uint64_ceildiv_res_uint32).
 #[inline]
-pub fn uint64_ceildiv_as_u32(_a: u64, _b: u64) -> u32 {
-    todo!()
+pub fn uint64_ceildiv_as_u32(a: u64, b: u64) -> u32 {
+    a.div_ceil(b) as u32
 }
 
+/// Ceiling division by 2^b for signed integers (C: opj_int_ceildivpow2).
 #[inline]
-pub fn int_ceildivpow2(_a: i32, _b: i32) -> i32 {
-    todo!()
+pub fn int_ceildivpow2(a: i32, b: i32) -> i32 {
+    ((a as i64 + (1i64 << b) - 1) >> b) as i32
 }
 
+/// Ceiling division by 2^b for i64 (C: opj_int64_ceildivpow2).
 #[inline]
-pub fn int64_ceildivpow2(_a: i64, _b: i32) -> i32 {
-    todo!()
+pub fn int64_ceildivpow2(a: i64, b: i32) -> i32 {
+    ((a + (1i64 << b) - 1) >> b) as i32
 }
 
+/// Ceiling division by 2^b for unsigned integers (C: opj_uint_ceildivpow2).
 #[inline]
-pub fn uint_ceildivpow2(_a: u32, _b: u32) -> u32 {
-    todo!()
+pub fn uint_ceildivpow2(a: u32, b: u32) -> u32 {
+    ((a as u64 + (1u64 << b) - 1) >> b) as u32
 }
 
+/// Floor division by 2^b for signed integers (C: opj_int_floordivpow2).
 #[inline]
-pub fn int_floordivpow2(_a: i32, _b: i32) -> i32 {
-    todo!()
+pub fn int_floordivpow2(a: i32, b: i32) -> i32 {
+    a >> b
 }
 
+/// Floor of log2 for signed integers (C: opj_int_floorlog2).
 #[inline]
-pub fn int_floorlog2(_a: i32) -> i32 {
-    todo!()
+pub fn int_floorlog2(a: i32) -> i32 {
+    debug_assert!(a > 0);
+    31 - (a as u32).leading_zeros() as i32
 }
 
+/// Floor of log2 for unsigned integers (C: opj_uint_floorlog2).
 #[inline]
-pub fn uint_floorlog2(_a: u32) -> u32 {
-    todo!()
+pub fn uint_floorlog2(a: u32) -> u32 {
+    debug_assert!(a > 0);
+    31 - a.leading_zeros()
 }
 
+/// Fixed-point multiplication with 13-bit shift (C: opj_int_fix_mul).
 #[inline]
-pub fn int_fix_mul(_a: i32, _b: i32) -> i32 {
-    todo!()
+pub fn int_fix_mul(a: i32, b: i32) -> i32 {
+    let temp = a as i64 * b as i64 + 4096;
+    (temp >> 13) as i32
 }
 
 #[cfg(test)]
@@ -112,7 +145,6 @@ mod tests {
     // --- Constants ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn constants_values() {
         assert_eq!(J2K_MAXRLVLS, 33);
         assert_eq!(J2K_MAXBANDS, 3 * J2K_MAXRLVLS - 2);
@@ -136,7 +168,6 @@ mod tests {
     // --- Enums ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn progression_order_variants() {
         assert_eq!(ProgressionOrder::Lrcp as i32, 0);
         assert_eq!(ProgressionOrder::Rlcp as i32, 1);
@@ -146,7 +177,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn color_space_variants() {
         assert_eq!(ColorSpace::Unknown as i32, -1);
         assert_eq!(ColorSpace::Unspecified as i32, 0);
@@ -158,7 +188,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn codec_format_variants() {
         assert_eq!(CodecFormat::Unknown as i32, -1);
         assert_eq!(CodecFormat::J2k as i32, 0);
@@ -167,24 +196,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn enum_derive_traits() {
-        // Clone + Copy
         let a = ProgressionOrder::Lrcp;
         let b = a;
         assert_eq!(a, b);
-
-        // Debug
         let _ = format!("{:?}", ColorSpace::Srgb);
-
-        // PartialEq + Eq
         assert_ne!(CodecFormat::J2k, CodecFormat::Jp2);
     }
 
     // --- Integer math ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_ceildiv_basic() {
         assert_eq!(int_ceildiv(10, 3), 4);
         assert_eq!(int_ceildiv(9, 3), 3);
@@ -193,14 +215,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_ceildiv_negative() {
-        assert_eq!(int_ceildiv(-10, 3), -3);
+        // C formula: (a + b - 1) / b with truncation toward zero
+        // (-10 + 3 - 1) / 3 = -8 / 3 = -2
+        assert_eq!(int_ceildiv(-10, 3), -2);
+        // (-9 + 3 - 1) / 3 = -7 / 3 = -2
         assert_eq!(int_ceildiv(-9, 3), -2);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn uint_ceildiv_basic() {
         assert_eq!(uint_ceildiv(10, 3), 4);
         assert_eq!(uint_ceildiv(9, 3), 3);
@@ -210,7 +233,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn uint64_ceildiv_as_u32_basic() {
         assert_eq!(uint64_ceildiv_as_u32(10, 3), 4);
         assert_eq!(uint64_ceildiv_as_u32(9, 3), 3);
@@ -218,7 +240,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_ceildivpow2_basic() {
         assert_eq!(int_ceildivpow2(10, 2), 3);
         assert_eq!(int_ceildivpow2(8, 2), 2);
@@ -227,21 +248,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_ceildivpow2_negative() {
         assert_eq!(int_ceildivpow2(-8, 2), -2);
         assert_eq!(int_ceildivpow2(-7, 2), -1);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int64_ceildivpow2_basic() {
         assert_eq!(int64_ceildivpow2(10, 2), 3);
         assert_eq!(int64_ceildivpow2(-8, 2), -2);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn uint_ceildivpow2_basic() {
         assert_eq!(uint_ceildivpow2(10, 2), 3);
         assert_eq!(uint_ceildivpow2(8, 2), 2);
@@ -249,7 +267,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_floordivpow2_basic() {
         assert_eq!(int_floordivpow2(10, 2), 2);
         assert_eq!(int_floordivpow2(8, 2), 2);
@@ -259,7 +276,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_floorlog2_basic() {
         assert_eq!(int_floorlog2(1), 0);
         assert_eq!(int_floorlog2(2), 1);
@@ -271,7 +287,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn uint_floorlog2_basic() {
         assert_eq!(uint_floorlog2(1), 0);
         assert_eq!(uint_floorlog2(2), 1);
@@ -281,9 +296,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn int_fix_mul_basic() {
-        // ((i64)a * (i64)b + 4096) >> 13
         assert_eq!(int_fix_mul(8192, 8192), 8192); // 1.0 * 1.0 = 1.0
         assert_eq!(int_fix_mul(8192, 4096), 4096); // 1.0 * 0.5 = 0.5
         assert_eq!(int_fix_mul(0, 8192), 0);
