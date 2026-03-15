@@ -382,7 +382,7 @@ types.rs (定数追加)
     +--- transform/invert.rs (error.rs)
     |         |
     |         v
-    +--- transform/mct.rs (invert, types::int_fix_mul)
+    +--- transform/mct.rs (invert, types::int_fix_mul_t1)
     |
     +--- transform/dwt.rs (types数学関数)
     |         |
