@@ -275,6 +275,294 @@ impl T1 {
         nmsedec
     }
 
+    // --- Refinement encoding step helper ---
+
+    /// Refinement pass step (encoder) for one coefficient (C: opj_t1_enc_refpass_step_macro).
+    #[allow(clippy::too_many_arguments)]
+    fn enc_refpass_step(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        bpno: i32,
+        one: u32,
+        nmsedec: &mut i32,
+        pass_type: u8,
+        ci: u32,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == (T1_SIGMA_THIS << shift) {
+            let ctxt = getctxno_mag(flags >> shift) as usize;
+            let abs_data = smr_abs(self.data[datap]);
+            *nmsedec += getnmsedec_ref(abs_data, bpno as u32) as i32;
+            let v = if (abs_data & one) != 0 { 1u32 } else { 0u32 };
+            mqc.set_curctx(ctxt);
+            if pass_type == T1_TYPE_RAW {
+                mqc.bypass_enc(v);
+            } else {
+                mqc.encode(v);
+            }
+            self.flags[fp] |= T1_MU_THIS << shift;
+        }
+    }
+
+    // --- Refinement encoding pass ---
+
+    /// Refinement pass encoder (C: opj_t1_enc_refpass).
+    pub fn enc_refpass(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno: i32,
+        pass_type: u8,
+    ) -> i32 {
+        let mut nmsedec = 0i32;
+        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+
+        let any_sigma = T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13;
+        let all_pi = T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3;
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        // Full 4-row strips
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                let flags = self.flags[fp];
+                if (flags & any_sigma) == 0 {
+                    // none significant
+                    datap += 4;
+                    fp += 1;
+                    continue;
+                }
+                if (flags & all_pi) == all_pi {
+                    // all processed by sigpass
+                    datap += 4;
+                    fp += 1;
+                    continue;
+                }
+                self.enc_refpass_step(mqc, fp, datap, bpno, one, &mut nmsedec, pass_type, 0);
+                self.enc_refpass_step(mqc, fp, datap + 1, bpno, one, &mut nmsedec, pass_type, 1);
+                self.enc_refpass_step(mqc, fp, datap + 2, bpno, one, &mut nmsedec, pass_type, 2);
+                self.enc_refpass_step(mqc, fp, datap + 3, bpno, one, &mut nmsedec, pass_type, 3);
+                datap += 4;
+                fp += 1;
+            }
+            fp += 2; // skip border columns
+        }
+
+        // Remaining rows
+        let k = h & !3;
+        if k < h {
+            let remaining = h - k;
+            for _i in 0..w {
+                if (self.flags[fp] & any_sigma) == 0 {
+                    datap += remaining;
+                    fp += 1;
+                    continue;
+                }
+                for j in 0..remaining {
+                    self.enc_refpass_step(
+                        mqc,
+                        fp,
+                        datap,
+                        bpno,
+                        one,
+                        &mut nmsedec,
+                        pass_type,
+                        j as u32,
+                    );
+                    datap += 1;
+                }
+                fp += 1;
+            }
+        }
+
+        nmsedec
+    }
+
+    // --- Clean-up encoding step helper ---
+
+    /// Clean-up pass step (encoder) for one coefficient (C: opj_t1_enc_clnpass_step_macro).
+    ///
+    /// Processes coefficients from `runlen` to `lim` in the current column.
+    /// If `agg` is true and `ci == runlen`, the coefficient is known to be significant
+    /// (determined by aggregation) and skips the ZC encode.
+    #[allow(clippy::too_many_arguments)]
+    fn enc_clnpass_step(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        bpno: i32,
+        one: u32,
+        nmsedec: &mut i32,
+        agg: bool,
+        runlen: u32,
+        lim: u32,
+        cblksty: u32,
+    ) {
+        let check = T1_SIGMA_4
+            | T1_SIGMA_7
+            | T1_SIGMA_10
+            | T1_SIGMA_13
+            | T1_PI_0
+            | T1_PI_1
+            | T1_PI_2
+            | T1_PI_3;
+
+        // If all 4 samples are significant AND all have PI set, just clear PI bits
+        if (self.flags[fp] & check) == check {
+            match runlen {
+                0 => self.flags[fp] &= !(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3),
+                1 => self.flags[fp] &= !(T1_PI_1 | T1_PI_2 | T1_PI_3),
+                2 => self.flags[fp] &= !(T1_PI_2 | T1_PI_3),
+                3 => self.flags[fp] &= !T1_PI_3,
+                _ => {}
+            }
+            return;
+        }
+
+        let mut l_datap = datap;
+        for ci in runlen..lim {
+            let mut goto_partial = false;
+
+            if agg && ci == runlen {
+                goto_partial = true;
+            } else if (self.flags[fp] & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3))) == 0 {
+                let ctxt1 = getctxno_zc(self.lut_ctxno_zc_orient_offset, self.flags[fp] >> (ci * 3))
+                    as usize;
+                let v = if (smr_abs(self.data[l_datap]) & one) != 0 {
+                    1u32
+                } else {
+                    0u32
+                };
+                mqc.set_curctx(ctxt1);
+                mqc.encode(v);
+                if v != 0 {
+                    goto_partial = true;
+                }
+            }
+
+            if goto_partial {
+                let lu = getctxtno_sc_or_spb_index(
+                    self.flags[fp],
+                    self.flags[fp - 1],
+                    self.flags[fp + 1],
+                    ci,
+                );
+                *nmsedec += getnmsedec_sig(smr_abs(self.data[l_datap]), bpno as u32) as i32;
+                let ctxt2 = getctxno_sc(lu) as usize;
+                mqc.set_curctx(ctxt2);
+                let sign = smr_sign(self.data[l_datap]);
+                let spb = getspb(lu) as u32;
+                mqc.encode(sign ^ spb);
+                let vsc = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0 && ci == 0;
+                let stride = self.flags_stride();
+                update_flags(&mut self.flags, fp, ci, sign, stride, vsc);
+            }
+
+            self.flags[fp] &= !(T1_PI_THIS << (3 * ci));
+            l_datap += 1;
+        }
+    }
+
+    // --- Clean-up encoding pass ---
+
+    /// Clean-up pass encoder (C: opj_t1_enc_clnpass).
+    pub fn enc_clnpass(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno: i32,
+        cblksty: u32,
+    ) -> i32 {
+        let mut nmsedec = 0i32;
+        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        // Full 4-row strips
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                let agg = self.flags[fp] == 0;
+                let runlen;
+
+                if agg {
+                    // Find first significant sample
+                    let mut rl = 0u32;
+                    while rl < 4 {
+                        if (smr_abs(self.data[datap + rl as usize]) & one) != 0 {
+                            break;
+                        }
+                        rl += 1;
+                    }
+                    runlen = rl;
+
+                    mqc.set_curctx(T1_CTXNO_AGG);
+                    mqc.encode(if runlen != 4 { 1 } else { 0 });
+                    if runlen == 4 {
+                        datap += 4;
+                        fp += 1;
+                        continue;
+                    }
+                    mqc.set_curctx(T1_CTXNO_UNI);
+                    mqc.encode(runlen >> 1);
+                    mqc.encode(runlen & 1);
+                } else {
+                    runlen = 0;
+                }
+
+                self.enc_clnpass_step(
+                    mqc,
+                    fp,
+                    datap + runlen as usize,
+                    bpno,
+                    one,
+                    &mut nmsedec,
+                    agg,
+                    runlen,
+                    4,
+                    cblksty,
+                );
+                datap += 4;
+                fp += 1;
+            }
+            fp += 2; // skip border columns
+        }
+
+        // Remaining rows (no aggregation)
+        let k = h & !3;
+        if k < h {
+            let remaining = (h - k) as u32;
+            for _i in 0..w {
+                self.enc_clnpass_step(
+                    mqc,
+                    fp,
+                    datap,
+                    bpno,
+                    one,
+                    &mut nmsedec,
+                    false,
+                    0,
+                    remaining,
+                    cblksty,
+                );
+                datap += remaining as usize;
+                fp += 1;
+            }
+        }
+
+        nmsedec
+    }
+
     // --- Decoding step helpers ---
 
     fn dec_sigpass_step_mqc(
@@ -432,6 +720,302 @@ impl T1 {
                 datap += 1;
                 fp += 1;
             }
+        }
+    }
+
+    // --- Refinement decoding step helpers ---
+
+    fn dec_refpass_step_mqc(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        poshalf: i32,
+        ci: u32,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == (T1_SIGMA_THIS << shift) {
+            let ctxt = getctxno_mag(flags >> shift) as usize;
+            mqc.set_curctx(ctxt);
+            let v = mqc.decode();
+            let is_negative = self.data[datap] < 0;
+            self.data[datap] += if (v ^ (is_negative as u32)) != 0 {
+                poshalf
+            } else {
+                -poshalf
+            };
+            self.flags[fp] |= T1_MU_THIS << shift;
+        }
+    }
+
+    fn dec_refpass_step_raw(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        poshalf: i32,
+        ci: u32,
+    ) {
+        let flags = self.flags[fp];
+        let shift = ci * 3;
+
+        if (flags & ((T1_SIGMA_THIS | T1_PI_THIS) << shift)) == (T1_SIGMA_THIS << shift) {
+            let v = mqc.raw_decode();
+            let is_negative = self.data[datap] < 0;
+            self.data[datap] += if (v ^ (is_negative as u32)) != 0 {
+                poshalf
+            } else {
+                -poshalf
+            };
+            self.flags[fp] |= T1_MU_THIS << shift;
+        }
+    }
+
+    // --- Refinement decoding passes ---
+
+    /// Refinement pass decoder, MQ mode (C: opj_t1_dec_refpass_mqc).
+    pub fn dec_refpass_mqc(&mut self, mqc: &mut crate::coding::mqc::Mqc, bpno_plus_one: i32) {
+        let one = 1i32 << (bpno_plus_one - 1);
+        let poshalf = one >> 1;
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    self.dec_refpass_step_mqc(mqc, fp, datap, poshalf, 0);
+                    self.dec_refpass_step_mqc(mqc, fp, datap + w, poshalf, 1);
+                    self.dec_refpass_step_mqc(mqc, fp, datap + 2 * w, poshalf, 2);
+                    self.dec_refpass_step_mqc(mqc, fp, datap + 3 * w, poshalf, 3);
+                }
+                datap += 1;
+                fp += 1;
+            }
+            datap += 3 * w;
+            fp += 2;
+        }
+
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                for j in 0..(h - k) {
+                    self.dec_refpass_step_mqc(mqc, fp, datap + j * w, poshalf, j as u32);
+                }
+                datap += 1;
+                fp += 1;
+            }
+        }
+    }
+
+    /// Refinement pass decoder, RAW mode (C: opj_t1_dec_refpass_raw).
+    pub fn dec_refpass_raw(&mut self, mqc: &mut crate::coding::mqc::Mqc, bpno_plus_one: i32) {
+        let one = 1i32 << (bpno_plus_one - 1);
+        let poshalf = one >> 1;
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] != 0 {
+                    self.dec_refpass_step_raw(mqc, fp, datap, poshalf, 0);
+                    self.dec_refpass_step_raw(mqc, fp, datap + w, poshalf, 1);
+                    self.dec_refpass_step_raw(mqc, fp, datap + 2 * w, poshalf, 2);
+                    self.dec_refpass_step_raw(mqc, fp, datap + 3 * w, poshalf, 3);
+                }
+                datap += 1;
+                fp += 1;
+            }
+            datap += 3 * w;
+            fp += 2;
+        }
+
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                for j in 0..(h - k) {
+                    self.dec_refpass_step_raw(mqc, fp, datap + j * w, poshalf, j as u32);
+                }
+                datap += 1;
+                fp += 1;
+            }
+        }
+    }
+
+    // --- Clean-up decoding step helpers ---
+
+    /// Clean-up pass step (decoder) for one coefficient (C: opj_t1_dec_clnpass_step_macro).
+    ///
+    /// `check_flags`: if true, skip if already significant/PI. If false, always process.
+    /// `partial`: if true, skip ZC decode (coefficient is known significant from aggregation).
+    #[allow(clippy::too_many_arguments)]
+    fn dec_clnpass_step(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        fp: usize,
+        datap: usize,
+        oneplushalf: i32,
+        ci: u32,
+        check_flags: bool,
+        partial: bool,
+        vsc: bool,
+    ) {
+        if check_flags && (self.flags[fp] & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3))) != 0 {
+            return;
+        }
+
+        if !partial {
+            let ctxt1 =
+                getctxno_zc(self.lut_ctxno_zc_orient_offset, self.flags[fp] >> (ci * 3)) as usize;
+            mqc.set_curctx(ctxt1);
+            let v = mqc.decode();
+            if v == 0 {
+                return;
+            }
+        }
+
+        // Coefficient is significant: decode sign
+        let lu =
+            getctxtno_sc_or_spb_index(self.flags[fp], self.flags[fp - 1], self.flags[fp + 1], ci);
+        let ctxt2 = getctxno_sc(lu) as usize;
+        mqc.set_curctx(ctxt2);
+        let v = mqc.decode() ^ getspb(lu) as u32;
+        self.data[datap] = if v != 0 { -oneplushalf } else { oneplushalf };
+        let stride = self.flags_stride();
+        update_flags(&mut self.flags, fp, ci, v, stride, vsc);
+    }
+
+    // --- Clean-up decoding pass ---
+
+    /// Clean-up pass decoder (C: opj_t1_dec_clnpass).
+    pub fn dec_clnpass(
+        &mut self,
+        mqc: &mut crate::coding::mqc::Mqc,
+        bpno_plus_one: i32,
+        cblksty: u32,
+    ) {
+        let one = 1i32 << (bpno_plus_one - 1);
+        let half = one >> 1;
+        let oneplushalf = one | half;
+        let w = self.w as usize;
+        let h = self.h as usize;
+        let stride = self.flags_stride();
+        let vsc = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
+
+        let mut datap = 0usize;
+        let mut fp = stride + 1;
+
+        // Full 4-row strips
+        for _k in (0..h & !3).step_by(4) {
+            for _i in 0..w {
+                if self.flags[fp] == 0 {
+                    // Aggregation: all flags are zero
+                    mqc.set_curctx(T1_CTXNO_AGG);
+                    let v = mqc.decode();
+                    if v == 0 {
+                        // No significant coefficients in this column
+                        datap += 1;
+                        fp += 1;
+                        continue;
+                    }
+                    // Decode run length
+                    mqc.set_curctx(T1_CTXNO_UNI);
+                    let rl_hi = mqc.decode();
+                    let rl_lo = mqc.decode();
+                    let runlen = (rl_hi << 1) | rl_lo;
+
+                    // Fallthrough: process from runlen to 3
+                    // runlen is the first significant sample (partial=true for it)
+                    let mut partial = true;
+                    for ci in runlen..4 {
+                        let vsc_ci = vsc && ci == 0;
+                        self.dec_clnpass_step(
+                            mqc,
+                            fp,
+                            datap + (ci as usize) * w,
+                            oneplushalf,
+                            ci,
+                            false,
+                            partial,
+                            vsc_ci,
+                        );
+                        partial = false;
+                    }
+                } else {
+                    // Non-zero flags: standard step for each ci
+                    self.dec_clnpass_step(mqc, fp, datap, oneplushalf, 0, true, false, vsc);
+                    self.dec_clnpass_step(mqc, fp, datap + w, oneplushalf, 1, true, false, false);
+                    self.dec_clnpass_step(
+                        mqc,
+                        fp,
+                        datap + 2 * w,
+                        oneplushalf,
+                        2,
+                        true,
+                        false,
+                        false,
+                    );
+                    self.dec_clnpass_step(
+                        mqc,
+                        fp,
+                        datap + 3 * w,
+                        oneplushalf,
+                        3,
+                        true,
+                        false,
+                        false,
+                    );
+                }
+                // Clear PI flags
+                self.flags[fp] &= !(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3);
+                datap += 1;
+                fp += 1;
+            }
+            datap += 3 * w;
+            fp += 2;
+        }
+
+        // Remaining rows (no aggregation)
+        let k = h & !3;
+        if k < h {
+            for _i in 0..w {
+                for j in 0..(h - k) {
+                    let vsc_j = vsc && j == 0;
+                    self.dec_clnpass_step(
+                        mqc,
+                        fp,
+                        datap + j * w,
+                        oneplushalf,
+                        j as u32,
+                        true,
+                        false,
+                        vsc_j,
+                    );
+                }
+                self.flags[fp] &= !(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3);
+                datap += 1;
+                fp += 1;
+            }
+        }
+
+        // SEGSYM check
+        if (cblksty & J2K_CCP_CBLKSTY_SEGSYM) != 0 {
+            mqc.set_curctx(T1_CTXNO_UNI);
+            let b0 = mqc.decode();
+            let b1 = mqc.decode();
+            let b2 = mqc.decode();
+            let b3 = mqc.decode();
+            let _sym = (b0 << 3) | (b1 << 2) | (b2 << 1) | b3;
+            // C version: warn if sym != 0xa
         }
     }
 }
@@ -1013,5 +1597,170 @@ mod tests {
         // Verify: (col=1, row=0) in row-major = data[0*4 + 1] = data[1]
         let oneplushalf = (1i32 << bpno) | (1i32 << (bpno - 1));
         assert_eq!(dec.data[1], oneplushalf);
+    }
+
+    // --- Refinement pass tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn refpass_encode_decode_roundtrip() {
+        use crate::coding::mqc::Mqc;
+
+        // Setup: 4x4 block. Coefficient at (col=1, row=0) was made significant
+        // at a higher bitplane (bpno=5). We now run refpass at a lower bitplane
+        // (bpno=3) to refine the magnitude bit.
+        let higher_bpno: i32 = 5;
+        let refine_bpno: i32 = 3;
+
+        // --- Encode ---
+        let mut enc = T1::new(true);
+        enc.allocate_buffers(4, 4).unwrap();
+        enc.set_orient(0);
+
+        // Encoder zigzag layout: col 1 = data[4..8], row 0 = data[4]
+        // Set coefficient to a value that has bits at both bpno=5 and bpno=3
+        let val = (1i32 << (higher_bpno + T1_NMSEDEC_FRACBITS as i32))
+            | (1i32 << (refine_bpno + T1_NMSEDEC_FRACBITS as i32));
+        enc.data[4] = val; // positive, SMR = two's complement for positive
+
+        // Mark (col=1, row=0) as already significant (simulating prior clnpass at higher bpno)
+        let fp = enc.flags_index(1, 0);
+        let stride = enc.flags_stride();
+        update_flags(&mut enc.flags, fp, 0, 0, stride, false); // sign=0 (positive)
+
+        let mut enc_buf = vec![0u8; 256];
+        let num_bytes;
+        {
+            let mut mqc = Mqc::new(&mut enc_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_enc();
+            let nmsedec = enc.enc_refpass(&mut mqc, refine_bpno, T1_TYPE_MQ);
+            mqc.flush();
+            assert!(nmsedec >= 0);
+            num_bytes = mqc.num_bytes();
+            assert!(num_bytes > 0);
+        }
+
+        // Verify MU flag was set on encoder
+        assert_ne!(
+            enc.flags[fp] & T1_MU_THIS,
+            0,
+            "MU_THIS should be set after enc_refpass"
+        );
+
+        // --- Decode ---
+        let mut dec_buf = vec![0u8; 256];
+        dec_buf[..num_bytes].copy_from_slice(&enc_buf[1..1 + num_bytes]);
+
+        let mut dec = T1::new(false);
+        dec.allocate_buffers(4, 4).unwrap();
+        dec.set_orient(0);
+
+        // Decoder row-major: (col=1, row=0) = data[0*4 + 1] = data[1]
+        // Set initial decoded value as oneplushalf from the higher bitplane
+        let one_high = 1i32 << higher_bpno;
+        let half_high = one_high >> 1;
+        let oneplushalf_high = one_high | half_high;
+        dec.data[1] = oneplushalf_high; // positive
+
+        // Same prior flag state
+        let fp_dec = dec.flags_index(1, 0);
+        let stride_dec = dec.flags_stride();
+        update_flags(&mut dec.flags, fp_dec, 0, 0, stride_dec, false);
+
+        {
+            let mut mqc = Mqc::new(&mut dec_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_dec(num_bytes);
+            dec.dec_refpass_mqc(&mut mqc, refine_bpno + 1);
+            mqc.finish_dec();
+        }
+
+        // Refinement should add poshalf (since bit=1 and data>=0, v=1 ^ 0 = 1 → +poshalf)
+        let poshalf = 1i32 << (refine_bpno - 1);
+        let expected = oneplushalf_high + poshalf;
+        assert_eq!(
+            dec.data[1], expected,
+            "refinement bit should adjust decoded value"
+        );
+        // MU flag should be set
+        assert_ne!(
+            dec.flags[fp_dec] & T1_MU_THIS,
+            0,
+            "MU_THIS should be set after dec_refpass"
+        );
+    }
+
+    // --- Clean-up pass tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn clnpass_encode_decode_roundtrip() {
+        use crate::coding::mqc::Mqc;
+
+        // Setup: 4x4 block with some non-zero coefficients at bpno=3.
+        // Clean-up pass is always the first pass for a fresh (all-zero flags) block,
+        // so no prior significance/PI state needed.
+        let bpno: i32 = 3;
+        let one = 1i32 << (bpno + T1_NMSEDEC_FRACBITS as i32);
+
+        // --- Encode ---
+        let mut enc = T1::new(true);
+        enc.allocate_buffers(4, 4).unwrap();
+        enc.set_orient(0);
+
+        // Encoder zigzag layout: col c = data[c*4..c*4+4]
+        // Set (col=0, row=0) = data[0] to positive value with bit at bpno set
+        enc.data[0] = one;
+        // Set (col=2, row=1) = data[2*4 + 1] = data[9] to negative value
+        enc.data[9] = (one as u32 | 0x8000_0000) as i32; // SMR negative
+
+        let mut enc_buf = vec![0u8; 256];
+        let num_bytes;
+        {
+            let mut mqc = Mqc::new(&mut enc_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_enc();
+            let nmsedec = enc.enc_clnpass(&mut mqc, bpno, 0);
+            mqc.flush();
+            assert!(nmsedec >= 0);
+            num_bytes = mqc.num_bytes();
+            assert!(num_bytes > 0);
+        }
+
+        // --- Decode ---
+        let mut dec_buf = vec![0u8; 256];
+        dec_buf[..num_bytes].copy_from_slice(&enc_buf[1..1 + num_bytes]);
+
+        let mut dec = T1::new(false);
+        dec.allocate_buffers(4, 4).unwrap();
+        dec.set_orient(0);
+
+        {
+            let mut mqc = Mqc::new(&mut dec_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_dec(num_bytes);
+            dec.dec_clnpass(&mut mqc, bpno + 1, 0);
+            mqc.finish_dec();
+        }
+
+        // Verify: decoder row-major layout
+        let oneplushalf = (1i32 << bpno) | (1i32 << (bpno - 1));
+
+        // (col=0, row=0) in row-major = data[0*4 + 0] = data[0]
+        assert_eq!(
+            dec.data[0], oneplushalf,
+            "(0,0) should be positive oneplushalf"
+        );
+
+        // (col=2, row=1) in row-major = data[1*4 + 2] = data[6]
+        assert_eq!(
+            dec.data[6], -oneplushalf,
+            "(2,1) should be negative oneplushalf"
+        );
+
+        // Other coefficients should remain 0
+        assert_eq!(dec.data[1], 0, "(1,0) should be 0");
+        assert_eq!(dec.data[5], 0, "(1,1) should be 0");
     }
 }
