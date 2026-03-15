@@ -107,76 +107,107 @@ impl T1 {
 
     /// Set orient for ZC context lookup (C: mqc->lut_ctxno_zc_orient).
     #[inline]
-    pub fn set_orient(&mut self, _orient: u32) {
-        todo!()
+    pub fn set_orient(&mut self, orient: u32) {
+        self.lut_ctxno_zc_orient_offset = (orient as usize) << 9;
     }
 }
 
 // --- Context helper functions ---
 
-#[allow(unused_imports)]
 use crate::coding::t1_luts::*;
 
 /// Zero Coding context number (C: opj_t1_getctxno_zc).
 #[inline]
-pub fn getctxno_zc(_orient_offset: usize, _f: u32) -> u8 {
-    todo!()
+pub fn getctxno_zc(orient_offset: usize, f: u32) -> u8 {
+    LUT_CTXNO_ZC[orient_offset + (f & T1_SIGMA_NEIGHBOURS) as usize]
 }
 
 /// Sign context / SPB index (C: opj_t1_getctxtno_sc_or_spb_index).
+///
+/// Computes an 8-bit lookup index from the current flags word (fX),
+/// the previous (west) neighbour flags (pfX), and the next (east) neighbour
+/// flags (nfX) for sub-row ci.
 #[inline]
-pub fn getctxtno_sc_or_spb_index(_fx: u32, _pfx: u32, _nfx: u32, _ci: u32) -> u32 {
-    todo!()
+pub fn getctxtno_sc_or_spb_index(fx: u32, pfx: u32, nfx: u32, ci: u32) -> u32 {
+    let mut lu = (fx >> (ci * 3)) & (T1_SIGMA_1 | T1_SIGMA_3 | T1_SIGMA_5 | T1_SIGMA_7);
+
+    lu |= (pfx >> (T1_CHI_1_I + ci * 3)) & (1 << 0); // W sign
+    lu |= (nfx >> (T1_CHI_1_I - 2 + ci * 3)) & (1 << 2); // E sign
+    if ci == 0 {
+        lu |= (fx >> (T1_CHI_0_I - 4)) & (1 << 4); // N sign
+    } else {
+        lu |= (fx >> (T1_CHI_1_I - 4 + (ci - 1) * 3)) & (1 << 4);
+    }
+    lu |= (fx >> (T1_CHI_2_I - 6 + ci * 3)) & (1 << 6); // S sign
+    lu
 }
 
 /// Sign Coding context number (C: opj_t1_getctxno_sc).
 #[inline]
-pub fn getctxno_sc(_lu: u32) -> u8 {
-    todo!()
+pub fn getctxno_sc(lu: u32) -> u8 {
+    LUT_CTXNO_SC[lu as usize]
 }
 
 /// Magnitude context number (C: opj_t1_getctxno_mag).
 #[inline]
-pub fn getctxno_mag(_f: u32) -> u32 {
-    todo!()
+pub fn getctxno_mag(f: u32) -> u32 {
+    if (f & T1_MU_0) != 0 {
+        T1_CTXNO_MAG as u32 + 2
+    } else if (f & T1_SIGMA_NEIGHBOURS) != 0 {
+        T1_CTXNO_MAG as u32 + 1
+    } else {
+        T1_CTXNO_MAG as u32
+    }
 }
 
 /// Sign Prediction Bit (C: opj_t1_getspb).
 #[inline]
-pub fn getspb(_lu: u32) -> u8 {
-    todo!()
+pub fn getspb(lu: u32) -> u8 {
+    LUT_SPB[lu as usize]
 }
 
 /// NMSEDEC for significance pass (C: opj_t1_getnmsedec_sig).
 #[inline]
-pub fn getnmsedec_sig(_x: u32, _bitpos: u32) -> i16 {
-    todo!()
+pub fn getnmsedec_sig(x: u32, bitpos: u32) -> i16 {
+    if bitpos > 0 {
+        LUT_NMSEDEC_SIG[(x >> bitpos) as usize & ((1 << T1_NMSEDEC_BITS) - 1)]
+    } else {
+        LUT_NMSEDEC_SIG0[x as usize & ((1 << T1_NMSEDEC_BITS) - 1)]
+    }
 }
 
 /// NMSEDEC for refinement pass (C: opj_t1_getnmsedec_ref).
 #[inline]
-pub fn getnmsedec_ref(_x: u32, _bitpos: u32) -> i16 {
-    todo!()
+pub fn getnmsedec_ref(x: u32, bitpos: u32) -> i16 {
+    if bitpos > 0 {
+        LUT_NMSEDEC_REF[(x >> bitpos) as usize & ((1 << T1_NMSEDEC_BITS) - 1)]
+    } else {
+        LUT_NMSEDEC_REF0[x as usize & ((1 << T1_NMSEDEC_BITS) - 1)]
+    }
 }
 
 // --- Signed Magnitude Representation helpers (C: opj_smr_abs, opj_smr_sign, opj_to_smr) ---
 
 /// Absolute value from signed magnitude representation.
 #[inline]
-pub fn smr_abs(_x: i32) -> u32 {
-    todo!()
+pub fn smr_abs(x: i32) -> u32 {
+    (x as u32) & 0x7FFF_FFFF
 }
 
 /// Sign bit from signed magnitude representation (0 = positive, 1 = negative).
 #[inline]
-pub fn smr_sign(_x: i32) -> u32 {
-    todo!()
+pub fn smr_sign(x: i32) -> u32 {
+    (x as u32) >> 31
 }
 
 /// Convert two's complement to signed magnitude representation.
 #[inline]
-pub fn to_smr(_x: i32) -> i32 {
-    todo!()
+pub fn to_smr(x: i32) -> i32 {
+    if x >= 0 {
+        x
+    } else {
+        ((-x) as u32 | 0x8000_0000) as i32
+    }
 }
 
 #[cfg(test)]
@@ -360,7 +391,6 @@ mod tests {
     // --- Context helper tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_zc_no_neighbours() {
         // No significant neighbours -> context 0 for all orients
         for orient in 0..4u32 {
@@ -369,7 +399,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_zc_known_values() {
         // Orient 0 (LL/LH), north significant (T1_SIGMA_N = bit 1)
         let f = T1_SIGMA_N; // = 0x02
@@ -383,21 +412,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_mag_no_neighbours_not_refined() {
         // No neighbours, no MU -> base MAG context
         assert_eq!(getctxno_mag(0), T1_CTXNO_MAG as u32);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_mag_with_neighbours() {
         // Has significant neighbour, no MU -> MAG + 1
         assert_eq!(getctxno_mag(T1_SIGMA_N), T1_CTXNO_MAG as u32 + 1);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_mag_already_refined() {
         // MU_0 set -> MAG + 2 regardless of neighbours
         assert_eq!(getctxno_mag(T1_MU_0), T1_CTXNO_MAG as u32 + 2);
@@ -405,7 +431,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxno_sc_from_lut() {
         // Verify getctxno_sc delegates to LUT_CTXNO_SC
         assert_eq!(getctxno_sc(0), LUT_CTXNO_SC[0]);
@@ -413,7 +438,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getspb_from_lut() {
         // Verify getspb delegates to LUT_SPB
         assert_eq!(getspb(0), LUT_SPB[0]);
@@ -421,7 +445,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getnmsedec_sig_bitpos_zero() {
         // bitpos=0 uses LUT_NMSEDEC_SIG0
         assert_eq!(getnmsedec_sig(0, 0), LUT_NMSEDEC_SIG0[0]);
@@ -429,7 +452,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getnmsedec_sig_bitpos_nonzero() {
         // bitpos>0 uses LUT_NMSEDEC_SIG with shifted index
         let x: u32 = 0b1010_0110;
@@ -439,14 +461,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getnmsedec_ref_bitpos_zero() {
         assert_eq!(getnmsedec_ref(0, 0), LUT_NMSEDEC_REF0[0]);
         assert_eq!(getnmsedec_ref(42, 0), LUT_NMSEDEC_REF0[42]);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getnmsedec_ref_bitpos_nonzero() {
         let x: u32 = 0b1010_0110;
         let bitpos: u32 = 2;
@@ -455,7 +475,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn smr_roundtrip() {
         // Positive
         let v = to_smr(42);
@@ -474,7 +493,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn set_orient_offset() {
         let mut t1 = T1::new(true);
         t1.set_orient(2);
@@ -482,7 +500,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn getctxtno_sc_or_spb_index_zero_flags() {
         // All flags zero -> lu should be 0
         assert_eq!(getctxtno_sc_or_spb_index(0, 0, 0, 0), 0);
