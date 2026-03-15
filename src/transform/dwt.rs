@@ -108,14 +108,96 @@ pub fn dwt_decode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
     }
 }
 
+/// One lifting step on interleaved f32 data.
+///
+/// For each i in 0..count:
+///   data[target_off + 2*i] += (left + right) * c
+/// where left  = data[nbr_off + 2*clamp(i + left_delta, 0, nbr_count-1)]
+///       right = data[nbr_off + 2*clamp(i + right_delta, 0, nbr_count-1)]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn lift_step_97(
+    data: &mut [f32],
+    target_off: usize,
+    count: usize,
+    nbr_off: usize,
+    nbr_count: usize,
+    left_delta: isize,
+    right_delta: isize,
+    c: f32,
+) {
+    let max_idx = nbr_count as isize - 1;
+    for i in 0..count {
+        let li = (i as isize + left_delta).clamp(0, max_idx) as usize;
+        let ri = (i as isize + right_delta).clamp(0, max_idx) as usize;
+        let left = data[nbr_off + 2 * li];
+        let right = data[nbr_off + 2 * ri];
+        data[target_off + 2 * i] += (left + right) * c;
+    }
+}
+
 /// Forward 1D 9-7 lifting (in-place on interleaved data).
-pub fn dwt_encode_1_97(_data: &mut [f32], _sn: usize, _dn: usize, _cas: bool) {
-    todo!()
+pub fn dwt_encode_1_97(data: &mut [f32], sn: usize, dn: usize, cas: bool) {
+    if sn + dn <= 1 {
+        return;
+    }
+    if !cas {
+        // cas=0: s at even (off=0), d at odd (off=1)
+        lift_step_97(data, 1, dn, 0, sn, 0, 1, DWT_ALPHA);
+        lift_step_97(data, 0, sn, 1, dn, -1, 0, DWT_BETA);
+        lift_step_97(data, 1, dn, 0, sn, 0, 1, DWT_GAMMA);
+        lift_step_97(data, 0, sn, 1, dn, -1, 0, DWT_DELTA);
+        for i in 0..sn {
+            data[2 * i] *= DWT_INV_K;
+        }
+        for i in 0..dn {
+            data[2 * i + 1] *= DWT_K;
+        }
+    } else {
+        // cas=1: d at even (off=0), s at odd (off=1)
+        lift_step_97(data, 0, dn, 1, sn, -1, 0, DWT_ALPHA);
+        lift_step_97(data, 1, sn, 0, dn, 0, 1, DWT_BETA);
+        lift_step_97(data, 0, dn, 1, sn, -1, 0, DWT_GAMMA);
+        lift_step_97(data, 1, sn, 0, dn, 0, 1, DWT_DELTA);
+        for i in 0..dn {
+            data[2 * i] *= DWT_K;
+        }
+        for i in 0..sn {
+            data[2 * i + 1] *= DWT_INV_K;
+        }
+    }
 }
 
 /// Inverse 1D 9-7 lifting (in-place on interleaved data).
-pub fn dwt_decode_1_97(_data: &mut [f32], _sn: usize, _dn: usize, _cas: bool) {
-    todo!()
+pub fn dwt_decode_1_97(data: &mut [f32], sn: usize, dn: usize, cas: bool) {
+    if sn + dn <= 1 {
+        return;
+    }
+    if !cas {
+        // cas=0: s at even (off=0), d at odd (off=1)
+        for i in 0..sn {
+            data[2 * i] *= DWT_K;
+        }
+        for i in 0..dn {
+            data[2 * i + 1] *= DWT_INV_K;
+        }
+        lift_step_97(data, 0, sn, 1, dn, -1, 0, -DWT_DELTA);
+        lift_step_97(data, 1, dn, 0, sn, 0, 1, -DWT_GAMMA);
+        lift_step_97(data, 0, sn, 1, dn, -1, 0, -DWT_BETA);
+        lift_step_97(data, 1, dn, 0, sn, 0, 1, -DWT_ALPHA);
+    } else {
+        // cas=1: d at even (off=0), s at odd (off=1)
+        for i in 0..dn {
+            data[2 * i] *= DWT_INV_K;
+        }
+        for i in 0..sn {
+            data[2 * i + 1] *= DWT_K;
+        }
+        lift_step_97(data, 1, sn, 0, dn, 0, 1, -DWT_DELTA);
+        lift_step_97(data, 0, dn, 1, sn, -1, 0, -DWT_GAMMA);
+        lift_step_97(data, 1, sn, 0, dn, 0, 1, -DWT_BETA);
+        lift_step_97(data, 0, dn, 1, sn, -1, 0, -DWT_ALPHA);
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +307,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_1d_97_even_cas0_roundtrip() {
         let original = vec![10.0f32, 23.0, 35.0, 41.0, 58.0, 62.0, 77.0, 80.0];
         let mut data = original.clone();
@@ -235,7 +316,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_1d_97_odd_cas0_roundtrip() {
         let original = vec![10.0f32, 23.0, 35.0, 41.0, 58.0, 62.0, 77.0];
         let mut data = original.clone();
@@ -245,7 +325,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_1d_97_cas1_roundtrip() {
         let original = vec![100.0f32, 200.0, 300.0, 400.0, 500.0, 600.0];
         let mut data = original.clone();
@@ -255,7 +334,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_1d_97_length_1_noop() {
         let mut data = vec![42.0f32];
         dwt_encode_1_97(&mut data, 1, 0, false);
@@ -263,7 +341,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_1d_97_length_2_roundtrip() {
         let original = vec![100.0f32, 200.0];
         let mut data = original.clone();
