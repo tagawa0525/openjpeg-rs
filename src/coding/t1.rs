@@ -131,7 +131,7 @@ pub fn getctxno_zc(orient_offset: usize, f: u32) -> u8 {
 pub fn getctxtno_sc_or_spb_index(fx: u32, pfx: u32, nfx: u32, ci: u32) -> u32 {
     let mut lu = (fx >> (ci * 3)) & (T1_SIGMA_1 | T1_SIGMA_3 | T1_SIGMA_5 | T1_SIGMA_7);
 
-    lu |= (pfx >> (T1_CHI_1_I + ci * 3)) & (1 << 0); // W sign
+    lu |= (pfx >> (T1_CHI_1_I + ci * 3)) & (1); // W sign
     lu |= (nfx >> (T1_CHI_1_I - 2 + ci * 3)) & (1 << 2); // E sign
     if ci == 0 {
         lu |= (fx >> (T1_CHI_0_I - 4)) & (1 << 4); // N sign
@@ -208,6 +208,23 @@ pub fn to_smr(x: i32) -> i32 {
     } else {
         ((-x) as u32 | 0x8000_0000) as i32
     }
+}
+
+/// Update flags after a coefficient becomes significant (C: opj_t1_update_flags).
+///
+/// Sets SIGMA_THIS and CHI (sign) for the current data point, then propagates
+/// significance to all 8 neighbours. `ci` is the sub-row index (0..3).
+/// `vsc` disables north propagation for the top row of a VSC stripe.
+#[inline]
+pub fn update_flags(
+    _flags: &mut [u32],
+    _flagsp: usize,
+    _ci: u32,
+    _s: u32,
+    _stride: usize,
+    _vsc: bool,
+) {
+    todo!()
 }
 
 #[cfg(test)]
@@ -503,5 +520,92 @@ mod tests {
     fn getctxtno_sc_or_spb_index_zero_flags() {
         // All flags zero -> lu should be 0
         assert_eq!(getctxtno_sc_or_spb_index(0, 0, 0, 0), 0);
+    }
+
+    // --- update_flags tests ---
+
+    /// Helper: create a T1 with given dimensions, return (flags, flagsp, stride)
+    fn setup_flags(w: u32, h: u32) -> (Vec<u32>, usize, usize) {
+        let mut t1 = T1::new(true);
+        t1.allocate_buffers(w, h).unwrap();
+        let stride = t1.flags_stride();
+        let flagsp = t1.flags_index(2, 0); // column 2, row 0
+        (t1.flags, flagsp, stride)
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_sets_sigma_this() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        update_flags(&mut flags, fp, 0, 0, stride, false);
+        // T1_SIGMA_THIS (T1_SIGMA_4) should be set for ci=0
+        assert_ne!(flags[fp] & (T1_SIGMA_4), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_sets_chi_sign() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        // s=1 (negative sign)
+        update_flags(&mut flags, fp, 0, 1, stride, false);
+        // CHI_1 should be set (sign=1 for ci=0)
+        assert_ne!(flags[fp] & (T1_CHI_1), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_propagates_east_west() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        update_flags(&mut flags, fp, 0, 0, stride, false);
+        // West neighbour (flagsp[-1]) should have T1_SIGMA_E (= T1_SIGMA_5) set
+        assert_ne!(flags[fp - 1] & (T1_SIGMA_5), 0);
+        // East neighbour (flagsp[+1]) should have T1_SIGMA_W (= T1_SIGMA_3) set
+        assert_ne!(flags[fp + 1] & (T1_SIGMA_3), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_propagates_north() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        // ci=0, vsc=false: should propagate north
+        update_flags(&mut flags, fp, 0, 0, stride, false);
+        let north = fp - stride;
+        // T1_SIGMA_16 (south significance in north neighbour's row)
+        assert_ne!(flags[north] & T1_SIGMA_16, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_vsc_blocks_north() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        // ci=0, vsc=true: should NOT propagate north
+        update_flags(&mut flags, fp, 0, 0, stride, true);
+        let north = fp - stride;
+        assert_eq!(flags[north] & T1_SIGMA_16, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_propagates_south() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        // ci=3: should propagate south
+        update_flags(&mut flags, fp, 3, 0, stride, false);
+        let south = fp + stride;
+        // T1_SIGMA_1 (north significance in south neighbour's row)
+        assert_ne!(flags[south] & T1_SIGMA_1, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn update_flags_ci1_no_north_south() {
+        let (mut flags, fp, stride) = setup_flags(8, 8);
+        // ci=1: should NOT propagate to north or south neighbour rows
+        update_flags(&mut flags, fp, 1, 0, stride, false);
+        let north = fp - stride;
+        let south = fp + stride;
+        // North should be unchanged
+        assert_eq!(flags[north] & T1_SIGMA_16, 0);
+        // South should be unchanged
+        assert_eq!(flags[south] & T1_SIGMA_1, 0);
     }
 }
