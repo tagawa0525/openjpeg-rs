@@ -1,6 +1,6 @@
 # Phase 400: パケット管理 + タイル処理（PI・T2・TCD）
 
-Status: PLANNED
+Status: IN_PROGRESS
 
 ## Context
 
