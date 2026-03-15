@@ -100,7 +100,7 @@ impl MemoryStream {
 /// # Panics (debug)
 /// Panics if `n` is not in `1..=4` or `buf.len() < n`.
 pub fn write_bytes_be(buf: &mut [u8], val: u32, n: usize) {
-    debug_assert!(n >= 1 && n <= 4, "write_bytes_be: n must be in 1..=4");
+    debug_assert!((1..=4).contains(&n), "write_bytes_be: n must be in 1..=4");
     debug_assert!(buf.len() >= n, "write_bytes_be: buffer too small");
     let bytes = val.to_be_bytes();
     buf[..n].copy_from_slice(&bytes[4 - n..]);
@@ -111,7 +111,7 @@ pub fn write_bytes_be(buf: &mut [u8], val: u32, n: usize) {
 /// # Panics (debug)
 /// Panics if `n` is not in `1..=4` or `buf.len() < n`.
 pub fn read_bytes_be(buf: &[u8], n: usize) -> u32 {
-    debug_assert!(n >= 1 && n <= 4, "read_bytes_be: n must be in 1..=4");
+    debug_assert!((1..=4).contains(&n), "read_bytes_be: n must be in 1..=4");
     debug_assert!(buf.len() >= n, "read_bytes_be: buffer too small");
     let mut bytes = [0u8; 4];
     bytes[4 - n..].copy_from_slice(&buf[..n]);
