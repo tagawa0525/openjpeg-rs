@@ -1482,13 +1482,13 @@ pub fn to_smr(x: i32) -> i32 {
 /// `vsc` disables north propagation for the top row of a VSC stripe.
 #[inline]
 pub fn update_flags(flags: &mut [u32], flagsp: usize, ci: u32, s: u32, stride: usize, vsc: bool) {
-    // East neighbour: set SIGMA_5 (= "west is significant" from east's perspective)
+    // West neighbour (flagsp-1): set SIGMA_E (= SIGMA_5) to mark "east is significant"
     flags[flagsp - 1] |= T1_SIGMA_5 << (3 * ci);
 
     // Mark target as significant + set sign
     flags[flagsp] |= ((s << T1_CHI_1_I) | T1_SIGMA_4) << (3 * ci);
 
-    // West neighbour: set SIGMA_3 (= "east is significant" from west's perspective)
+    // East neighbour (flagsp+1): set SIGMA_W (= SIGMA_3) to mark "west is significant"
     flags[flagsp + 1] |= T1_SIGMA_3 << (3 * ci);
 
     // North: NW, N, NE (only for ci==0 and not VSC)
