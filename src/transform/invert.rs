@@ -20,8 +20,8 @@ pub fn matrix_inversion_f(src: &mut [f32], dst: &mut [f32], n: usize) -> Result<
 /// Returns false if the matrix is singular.
 fn lup_decompose(matrix: &mut [f32], permutations: &mut [u32], n: usize) -> bool {
     // Initialize permutations to identity
-    for i in 0..n {
-        permutations[i] = i as u32;
+    for (i, perm) in permutations.iter_mut().enumerate() {
+        *perm = i as u32;
     }
 
     for k in 0..n.saturating_sub(1) {

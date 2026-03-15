@@ -76,6 +76,7 @@ pub fn mct_getnorm_real(compno: u32) -> f64 {
 
 /// Forward custom MCT (C: opj_mct_encode_custom).
 /// Matrix is nb_comps×nb_comps in row-major order, applied as fixed-point multiply.
+#[allow(clippy::needless_range_loop)]
 pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]], n: usize) -> Result<()> {
     let nb_comps = data.len();
     let multiplier = 1 << 13;
@@ -102,6 +103,7 @@ pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]], n: usize) -> R
 
 /// Inverse custom MCT (C: opj_mct_decode_custom).
 /// Matrix is nb_comps×nb_comps, applied as floating-point multiply.
+#[allow(clippy::needless_range_loop)]
 pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> Result<()> {
     let nb_comps = data.len();
     let mut current = vec![0.0f32; nb_comps];
