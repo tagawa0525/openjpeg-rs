@@ -384,26 +384,100 @@ pub fn dwt_decode_2d_53(
     Ok(())
 }
 
-/// Forward 2D 9-7 DWT (C: opj_dwt_encode_real).
 pub fn dwt_encode_2d_97(
-    _data: &mut [f32],
-    _w: usize,
-    _h: usize,
-    _stride: usize,
-    _num_res: usize,
+    data: &mut [f32],
+    w: usize,
+    h: usize,
+    stride: usize,
+    num_res: usize,
 ) -> Result<()> {
-    todo!()
+    if num_res <= 1 || w == 0 || h == 0 {
+        return Ok(());
+    }
+    let mut tmp = vec![0.0f32; w.max(h)];
+    for level in (0..num_res - 1).rev() {
+        let rw = ((w - 1) >> level) + 1;
+        let rh = ((h - 1) >> level) + 1;
+        let rw1 = ((w - 1) >> (level + 1)) + 1;
+        let rh1 = ((h - 1) >> (level + 1)) + 1;
+        let sn_v = rh1;
+        let dn_v = rh - rh1;
+
+        // Vertical pass
+        for j in 0..rw {
+            for i in 0..rh {
+                tmp[i] = data[i * stride + j];
+            }
+            dwt_encode_1_97(&mut tmp[..rh], sn_v, dn_v, false);
+            let mut separated = vec![0.0f32; rh];
+            deinterleave_h(&tmp[..rh], &mut separated, sn_v, dn_v, false);
+            for i in 0..rh {
+                data[i * stride + j] = separated[i];
+            }
+        }
+
+        let sn_h = rw1;
+        let dn_h = rw - rw1;
+
+        // Horizontal pass
+        for i in 0..rh {
+            let row_start = i * stride;
+            tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
+            dwt_encode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
+            let mut separated = vec![0.0f32; rw];
+            deinterleave_h(&tmp[..rw], &mut separated, sn_h, dn_h, false);
+            data[row_start..row_start + rw].copy_from_slice(&separated);
+        }
+    }
+    Ok(())
 }
 
 /// Inverse 2D 9-7 DWT (C: opj_dwt_decode_real).
 pub fn dwt_decode_2d_97(
-    _data: &mut [f32],
-    _w: usize,
-    _h: usize,
-    _stride: usize,
-    _num_res: usize,
+    data: &mut [f32],
+    w: usize,
+    h: usize,
+    stride: usize,
+    num_res: usize,
 ) -> Result<()> {
-    todo!()
+    if num_res <= 1 || w == 0 || h == 0 {
+        return Ok(());
+    }
+    let mut tmp = vec![0.0f32; w.max(h)];
+    for level in 0..num_res - 1 {
+        let rw = ((w - 1) >> level) + 1;
+        let rh = ((h - 1) >> level) + 1;
+        let rw1 = ((w - 1) >> (level + 1)) + 1;
+        let rh1 = ((h - 1) >> (level + 1)) + 1;
+        let sn_h = rw1;
+        let dn_h = rw - rw1;
+
+        // Horizontal pass
+        for i in 0..rh {
+            let row_start = i * stride;
+            let separated = &data[row_start..row_start + rw];
+            interleave_h(separated, &mut tmp[..rw], sn_h, dn_h, false);
+            dwt_decode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
+            data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+        }
+
+        let sn_v = rh1;
+        let dn_v = rh - rh1;
+
+        // Vertical pass
+        for j in 0..rw {
+            let mut separated = vec![0.0f32; rh];
+            for i in 0..rh {
+                separated[i] = data[i * stride + j];
+            }
+            interleave_h(&separated, &mut tmp[..rh], sn_v, dn_v, false);
+            dwt_decode_1_97(&mut tmp[..rh], sn_v, dn_v, false);
+            for i in 0..rh {
+                data[i * stride + j] = tmp[i];
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -680,7 +754,6 @@ mod tests {
     // ==================== 2D 9-7 tests ====================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_97_4x4_roundtrip() {
         #[rustfmt::skip]
         let original: Vec<f32> = vec![
@@ -696,7 +769,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_97_8x8_multi_level_roundtrip() {
         let mut original = vec![0.0f32; 64];
         for (i, v) in original.iter_mut().enumerate() {
@@ -709,7 +781,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_97_odd_size_roundtrip() {
         #[rustfmt::skip]
         let original: Vec<f32> = vec![
