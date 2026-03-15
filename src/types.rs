@@ -154,6 +154,128 @@ pub fn int_fix_mul(a: i32, b: i32) -> i32 {
     (temp >> 13) as i32
 }
 
+// --- T1 constants ---
+
+/// NMSEDEC precision bits (C: T1_NMSEDEC_BITS).
+pub const T1_NMSEDEC_BITS: u32 = 7;
+/// NMSEDEC fractional bits (C: T1_NMSEDEC_FRACBITS).
+pub const T1_NMSEDEC_FRACBITS: u32 = T1_NMSEDEC_BITS - 1;
+
+/// Number of Zero Coding contexts (C: T1_NUMCTXS_ZC).
+pub const T1_NUMCTXS_ZC: usize = 9;
+/// Number of Sign Coding contexts (C: T1_NUMCTXS_SC).
+pub const T1_NUMCTXS_SC: usize = 5;
+/// Number of Magnitude contexts (C: T1_NUMCTXS_MAG).
+pub const T1_NUMCTXS_MAG: usize = 3;
+/// Number of Aggregation contexts (C: T1_NUMCTXS_AGG).
+pub const T1_NUMCTXS_AGG: usize = 1;
+/// Number of Uniform contexts (C: T1_NUMCTXS_UNI).
+pub const T1_NUMCTXS_UNI: usize = 1;
+
+/// Context offset: Zero Coding (C: T1_CTXNO_ZC).
+pub const T1_CTXNO_ZC: usize = 0;
+/// Context offset: Sign Coding (C: T1_CTXNO_SC).
+pub const T1_CTXNO_SC: usize = T1_CTXNO_ZC + T1_NUMCTXS_ZC;
+/// Context offset: Magnitude (C: T1_CTXNO_MAG).
+pub const T1_CTXNO_MAG: usize = T1_CTXNO_SC + T1_NUMCTXS_SC;
+/// Context offset: Aggregation (C: T1_CTXNO_AGG).
+pub const T1_CTXNO_AGG: usize = T1_CTXNO_MAG + T1_NUMCTXS_MAG;
+/// Context offset: Uniform (C: T1_CTXNO_UNI).
+pub const T1_CTXNO_UNI: usize = T1_CTXNO_AGG + T1_NUMCTXS_AGG;
+/// Total number of T1 contexts (C: T1_NUMCTXS).
+pub const T1_NUMCTXS: usize = T1_CTXNO_UNI + T1_NUMCTXS_UNI;
+
+/// Normal MQ coding mode (C: T1_TYPE_MQ).
+pub const T1_TYPE_MQ: u8 = 0;
+/// Raw (bypass) coding mode (C: T1_TYPE_RAW).
+pub const T1_TYPE_RAW: u8 = 1;
+
+// T1 flag bit positions — 32-bit word packs 4 rows of state.
+// SIGMA: significance (bits 0–17, 3 cols × 6 rows)
+pub const T1_SIGMA_0: u32 = 1 << 0;
+pub const T1_SIGMA_1: u32 = 1 << 1;
+pub const T1_SIGMA_2: u32 = 1 << 2;
+pub const T1_SIGMA_3: u32 = 1 << 3;
+pub const T1_SIGMA_4: u32 = 1 << 4;
+pub const T1_SIGMA_5: u32 = 1 << 5;
+pub const T1_SIGMA_6: u32 = 1 << 6;
+pub const T1_SIGMA_7: u32 = 1 << 7;
+pub const T1_SIGMA_8: u32 = 1 << 8;
+pub const T1_SIGMA_9: u32 = 1 << 9;
+pub const T1_SIGMA_10: u32 = 1 << 10;
+pub const T1_SIGMA_11: u32 = 1 << 11;
+pub const T1_SIGMA_12: u32 = 1 << 12;
+pub const T1_SIGMA_13: u32 = 1 << 13;
+pub const T1_SIGMA_14: u32 = 1 << 14;
+pub const T1_SIGMA_15: u32 = 1 << 15;
+pub const T1_SIGMA_16: u32 = 1 << 16;
+pub const T1_SIGMA_17: u32 = 1 << 17;
+
+// CHI: sign state
+pub const T1_CHI_0: u32 = 1 << 18;
+pub const T1_CHI_1: u32 = 1 << 19;
+pub const T1_MU_0: u32 = 1 << 20;
+pub const T1_PI_0: u32 = 1 << 21;
+pub const T1_CHI_2: u32 = 1 << 22;
+pub const T1_MU_1: u32 = 1 << 23;
+pub const T1_PI_1: u32 = 1 << 24;
+pub const T1_CHI_3: u32 = 1 << 25;
+pub const T1_MU_2: u32 = 1 << 26;
+pub const T1_PI_2: u32 = 1 << 27;
+pub const T1_CHI_4: u32 = 1 << 28;
+pub const T1_MU_3: u32 = 1 << 29;
+pub const T1_PI_3: u32 = 1 << 30;
+pub const T1_CHI_5: u32 = 1 << 31;
+
+// Direction aliases for data point 0 (shift by 3 bits per row).
+pub const T1_SIGMA_NW: u32 = T1_SIGMA_0;
+pub const T1_SIGMA_N: u32 = T1_SIGMA_1;
+pub const T1_SIGMA_NE: u32 = T1_SIGMA_2;
+pub const T1_SIGMA_W: u32 = T1_SIGMA_3;
+pub const T1_SIGMA_THIS: u32 = T1_SIGMA_4;
+pub const T1_SIGMA_E: u32 = T1_SIGMA_5;
+pub const T1_SIGMA_SW: u32 = T1_SIGMA_6;
+pub const T1_SIGMA_S: u32 = T1_SIGMA_7;
+pub const T1_SIGMA_SE: u32 = T1_SIGMA_8;
+pub const T1_SIGMA_NEIGHBOURS: u32 = T1_SIGMA_NW
+    | T1_SIGMA_N
+    | T1_SIGMA_NE
+    | T1_SIGMA_W
+    | T1_SIGMA_E
+    | T1_SIGMA_SW
+    | T1_SIGMA_S
+    | T1_SIGMA_SE;
+
+pub const T1_CHI_THIS: u32 = T1_CHI_1;
+pub const T1_MU_THIS: u32 = T1_MU_0;
+pub const T1_PI_THIS: u32 = T1_PI_0;
+pub const T1_CHI_S: u32 = T1_CHI_2;
+
+// LUT index bits for sign context (C: T1_LUT_SGN_W, etc.)
+pub const T1_LUT_SGN_W: u32 = 1 << 0;
+pub const T1_LUT_SIG_N: u32 = 1 << 1;
+pub const T1_LUT_SGN_E: u32 = 1 << 2;
+pub const T1_LUT_SIG_W: u32 = 1 << 3;
+pub const T1_LUT_SGN_N: u32 = 1 << 4;
+pub const T1_LUT_SIG_E: u32 = 1 << 5;
+pub const T1_LUT_SGN_S: u32 = 1 << 6;
+pub const T1_LUT_SIG_S: u32 = 1 << 7;
+
+// Codeblock style flags (C: J2K_CCP_CBLKSTY_*)
+pub const J2K_CCP_CBLKSTY_LAZY: u32 = 0x01;
+pub const J2K_CCP_CBLKSTY_RESET: u32 = 0x02;
+pub const J2K_CCP_CBLKSTY_TERMALL: u32 = 0x04;
+pub const J2K_CCP_CBLKSTY_VSC: u32 = 0x08;
+pub const J2K_CCP_CBLKSTY_PTERM: u32 = 0x10;
+pub const J2K_CCP_CBLKSTY_SEGSYM: u32 = 0x20;
+
+/// Fixed-point multiplication for T1 NMSEDEC (C: opj_int_fix_mul_t1).
+/// Uses round-to-nearest instead of biased rounding.
+#[inline]
+pub fn int_fix_mul_t1(a: i32, b: i32) -> i32 {
+    todo!("int_fix_mul_t1 not yet implemented")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +438,85 @@ mod tests {
         assert_eq!(int_fix_mul(8192, 8192), 8192); // 1.0 * 1.0 = 1.0
         assert_eq!(int_fix_mul(8192, 4096), 4096); // 1.0 * 0.5 = 0.5
         assert_eq!(int_fix_mul(0, 8192), 0);
+    }
+
+    // --- T1 constants ---
+
+    #[test]
+    fn t1_context_offsets() {
+        assert_eq!(T1_CTXNO_ZC, 0);
+        assert_eq!(T1_CTXNO_SC, 9);
+        assert_eq!(T1_CTXNO_MAG, 14);
+        assert_eq!(T1_CTXNO_AGG, 17);
+        assert_eq!(T1_CTXNO_UNI, 18);
+        assert_eq!(T1_NUMCTXS, 19);
+    }
+
+    #[test]
+    fn t1_flag_bit_positions() {
+        // SIGMA bits are contiguous 0..17
+        assert_eq!(T1_SIGMA_0, 1);
+        assert_eq!(T1_SIGMA_17, 1 << 17);
+        // CHI/MU/PI interleaving
+        assert_eq!(T1_CHI_0, 1 << 18);
+        assert_eq!(T1_CHI_1, 1 << 19);
+        assert_eq!(T1_MU_0, 1 << 20);
+        assert_eq!(T1_PI_0, 1 << 21);
+        assert_eq!(T1_CHI_5, 1 << 31);
+        // Direction aliases
+        assert_eq!(T1_SIGMA_NW, T1_SIGMA_0);
+        assert_eq!(T1_SIGMA_THIS, T1_SIGMA_4);
+        assert_eq!(T1_SIGMA_SE, T1_SIGMA_8);
+        assert_eq!(T1_CHI_THIS, T1_CHI_1);
+    }
+
+    #[test]
+    fn t1_sigma_neighbours_covers_8_directions() {
+        let expected = T1_SIGMA_0
+            | T1_SIGMA_1
+            | T1_SIGMA_2
+            | T1_SIGMA_3
+            | T1_SIGMA_5
+            | T1_SIGMA_6
+            | T1_SIGMA_7
+            | T1_SIGMA_8;
+        assert_eq!(T1_SIGMA_NEIGHBOURS, expected);
+        // Does NOT include THIS (SIGMA_4)
+        assert_eq!(T1_SIGMA_NEIGHBOURS & T1_SIGMA_THIS, 0);
+    }
+
+    #[test]
+    fn cblk_style_flags() {
+        assert_eq!(J2K_CCP_CBLKSTY_LAZY, 0x01);
+        assert_eq!(J2K_CCP_CBLKSTY_RESET, 0x02);
+        assert_eq!(J2K_CCP_CBLKSTY_TERMALL, 0x04);
+        assert_eq!(J2K_CCP_CBLKSTY_VSC, 0x08);
+        assert_eq!(J2K_CCP_CBLKSTY_PTERM, 0x10);
+        assert_eq!(J2K_CCP_CBLKSTY_SEGSYM, 0x20);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn int_fix_mul_t1_basic() {
+        // 1.0 * 1.0 = 1.0 in Q13
+        assert_eq!(int_fix_mul_t1(8192, 8192), 8192);
+        // 1.0 * 0.5 = 0.5
+        assert_eq!(int_fix_mul_t1(8192, 4096), 4096);
+        assert_eq!(int_fix_mul_t1(0, 8192), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn int_fix_mul_t1_rounding() {
+        // int_fix_mul_t1 rounds to nearest (adds bit 12 before shift)
+        // vs int_fix_mul which uses biased rounding (adds 4096)
+        // For value where bit 12 is set: 5 * 8192 = 40960
+        // temp = 5 * 8192 = 40960, bit 12 = 40960 & 4096 = 0 -> same as biased
+        // For value 3 * 4097 = 12291 (has bit 12 set differently):
+        let a = 3;
+        let b = 4097;
+        let temp = a as i64 * b as i64; // 12291
+        let rounded = ((temp + (temp & 4096)) >> 13) as i32;
+        assert_eq!(int_fix_mul_t1(a, b), rounded);
     }
 }
