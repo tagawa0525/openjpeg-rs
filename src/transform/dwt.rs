@@ -50,6 +50,21 @@ pub fn dwt_encode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
     }
 }
 
+/// 9-7 lifting coefficients (ITU-T T.800 Table F.4).
+/// Values match C version exactly; allow excessive_precision to preserve spec values.
+#[allow(clippy::excessive_precision)]
+pub const DWT_ALPHA: f32 = -1.586134342;
+#[allow(clippy::excessive_precision)]
+pub const DWT_BETA: f32 = -0.052980118;
+#[allow(clippy::excessive_precision)]
+pub const DWT_GAMMA: f32 = 0.882911075;
+#[allow(clippy::excessive_precision)]
+pub const DWT_DELTA: f32 = 0.443506852;
+#[allow(clippy::excessive_precision)]
+pub const DWT_K: f32 = 1.230174105;
+#[allow(clippy::excessive_precision)]
+pub const DWT_INV_K: f32 = 1.0 / 1.230174105;
+
 /// Inverse 1D 5-3 lifting (in-place on interleaved data).
 pub fn dwt_decode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
     if !cas {
@@ -91,6 +106,16 @@ pub fn dwt_decode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
             data[2 * i] += (dd_i + dd_im1) >> 1;
         }
     }
+}
+
+/// Forward 1D 9-7 lifting (in-place on interleaved data).
+pub fn dwt_encode_1_97(_data: &mut [f32], _sn: usize, _dn: usize, _cas: bool) {
+    todo!()
+}
+
+/// Inverse 1D 9-7 lifting (in-place on interleaved data).
+pub fn dwt_decode_1_97(_data: &mut [f32], _sn: usize, _dn: usize, _cas: bool) {
+    todo!()
 }
 
 #[cfg(test)]
@@ -181,5 +206,69 @@ mod tests {
         let mut data = vec![10, 20, 30, 40];
         dwt_encode_1_53(&mut data, 2, 2, false);
         assert_eq!(data, vec![10, 0, 33, 10]);
+    }
+
+    // ==================== 1D 9-7 tests ====================
+
+    fn assert_f32_eq(a: &[f32], b: &[f32], tol: f32) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (x - y).abs() < tol,
+                "index {}: {} vs {}, diff {}",
+                i,
+                x,
+                y,
+                (x - y).abs()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_1d_97_even_cas0_roundtrip() {
+        let original = vec![10.0f32, 23.0, 35.0, 41.0, 58.0, 62.0, 77.0, 80.0];
+        let mut data = original.clone();
+        dwt_encode_1_97(&mut data, 4, 4, false);
+        dwt_decode_1_97(&mut data, 4, 4, false);
+        assert_f32_eq(&data, &original, 1e-4);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_1d_97_odd_cas0_roundtrip() {
+        let original = vec![10.0f32, 23.0, 35.0, 41.0, 58.0, 62.0, 77.0];
+        let mut data = original.clone();
+        dwt_encode_1_97(&mut data, 4, 3, false);
+        dwt_decode_1_97(&mut data, 4, 3, false);
+        assert_f32_eq(&data, &original, 1e-4);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_1d_97_cas1_roundtrip() {
+        let original = vec![100.0f32, 200.0, 300.0, 400.0, 500.0, 600.0];
+        let mut data = original.clone();
+        dwt_encode_1_97(&mut data, 3, 3, true);
+        dwt_decode_1_97(&mut data, 3, 3, true);
+        assert_f32_eq(&data, &original, 1e-4);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_1d_97_length_1_noop() {
+        let mut data = vec![42.0f32];
+        dwt_encode_1_97(&mut data, 1, 0, false);
+        assert_eq!(data[0], 42.0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_1d_97_length_2_roundtrip() {
+        let original = vec![100.0f32, 200.0];
+        let mut data = original.clone();
+        dwt_encode_1_97(&mut data, 1, 1, false);
+        dwt_decode_1_97(&mut data, 1, 1, false);
+        assert_f32_eq(&data, &original, 1e-4);
     }
 }
