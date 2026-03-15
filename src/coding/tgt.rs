@@ -274,6 +274,13 @@ mod tests {
         tree.set_value(1, 5);
         tree.set_value(2, 7);
         tree.set_value(3, 2);
+        // Leaf values must be stored
+        assert_eq!(tree.node_value(0), 3);
+        assert_eq!(tree.node_value(1), 5);
+        assert_eq!(tree.node_value(2), 7);
+        assert_eq!(tree.node_value(3), 2);
+        // Root (node 4 in a 2x2 tree) must hold the minimum leaf value (2)
+        assert_eq!(tree.node_value(4), 2);
     }
 
     #[test]
