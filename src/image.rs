@@ -40,16 +40,98 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new(_params: &[ImageCompParam], _color_space: ColorSpace) -> Self {
-        todo!()
+    /// Create image with component data allocated (C: opj_image_create).
+    pub fn new(params: &[ImageCompParam], color_space: ColorSpace) -> Self {
+        let comps = params
+            .iter()
+            .map(|p| {
+                let size = p.w as usize * p.h as usize;
+                ImageComp {
+                    dx: p.dx,
+                    dy: p.dy,
+                    w: p.w,
+                    h: p.h,
+                    x0: p.x0,
+                    y0: p.y0,
+                    prec: p.prec,
+                    sgnd: p.sgnd,
+                    resno_decoded: 0,
+                    factor: 0,
+                    data: vec![0; size],
+                    alpha: 0,
+                }
+            })
+            .collect();
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: 0,
+            y1: 0,
+            color_space,
+            comps,
+            icc_profile: Vec::new(),
+        }
     }
 
-    pub fn new_tile(_params: &[ImageCompParam], _color_space: ColorSpace) -> Self {
-        todo!()
+    /// Create tile image without data allocation (C: opj_image_tile_create).
+    pub fn new_tile(params: &[ImageCompParam], color_space: ColorSpace) -> Self {
+        let comps = params
+            .iter()
+            .map(|p| ImageComp {
+                dx: p.dx,
+                dy: p.dy,
+                w: p.w,
+                h: p.h,
+                x0: p.x0,
+                y0: p.y0,
+                prec: p.prec,
+                sgnd: p.sgnd,
+                resno_decoded: 0,
+                factor: 0,
+                data: Vec::new(),
+                alpha: 0,
+            })
+            .collect();
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: 0,
+            y1: 0,
+            color_space,
+            comps,
+            icc_profile: Vec::new(),
+        }
     }
 
+    /// Copy header and component metadata without data (C: opj_copy_image_header).
     pub fn clone_header(&self) -> Self {
-        todo!()
+        let comps = self
+            .comps
+            .iter()
+            .map(|c| ImageComp {
+                dx: c.dx,
+                dy: c.dy,
+                w: c.w,
+                h: c.h,
+                x0: c.x0,
+                y0: c.y0,
+                prec: c.prec,
+                sgnd: c.sgnd,
+                resno_decoded: c.resno_decoded,
+                factor: c.factor,
+                data: Vec::new(),
+                alpha: c.alpha,
+            })
+            .collect();
+        Self {
+            x0: self.x0,
+            y0: self.y0,
+            x1: self.x1,
+            y1: self.y1,
+            color_space: self.color_space,
+            comps,
+            icc_profile: self.icc_profile.clone(),
+        }
     }
 }
 
@@ -73,7 +155,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn image_new_creates_components() {
         let params = rgb_params();
         let img = Image::new(&params, ColorSpace::Srgb);
@@ -82,7 +163,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn image_new_allocates_data() {
         let params = rgb_params();
         let img = Image::new(&params, ColorSpace::Srgb);
@@ -96,7 +176,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn image_new_tile_no_data() {
         let params = rgb_params();
         let img = Image::new_tile(&params, ColorSpace::Srgb);
@@ -107,7 +186,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn clone_header_copies_metadata() {
         let params = rgb_params();
         let mut img = Image::new(&params, ColorSpace::Srgb);
@@ -128,7 +206,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn clone_header_no_data() {
         let params = rgb_params();
         let img = Image::new(&params, ColorSpace::Srgb);
@@ -139,7 +216,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn clone_header_independent() {
         let params = rgb_params();
         let img = Image::new(&params, ColorSpace::Srgb);
