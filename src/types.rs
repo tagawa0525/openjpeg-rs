@@ -78,18 +78,21 @@ pub enum CodecFormat {
 /// Ceiling division for signed integers (C: opj_int_ceildiv).
 #[inline]
 pub fn int_ceildiv(a: i32, b: i32) -> i32 {
+    debug_assert!(b != 0, "int_ceildiv: divisor must not be zero");
     ((a as i64 + b as i64 - 1) / b as i64) as i32
 }
 
 /// Ceiling division for unsigned integers (C: opj_uint_ceildiv).
 #[inline]
 pub fn uint_ceildiv(a: u32, b: u32) -> u32 {
+    debug_assert!(b != 0, "uint_ceildiv: divisor must not be zero");
     (a as u64).div_ceil(b as u64) as u32
 }
 
 /// Ceiling division of u64 returning u32 (C: opj_uint64_ceildiv_res_uint32).
 #[inline]
 pub fn uint64_ceildiv_as_u32(a: u64, b: u64) -> u32 {
+    debug_assert!(b != 0, "uint64_ceildiv_as_u32: divisor must not be zero");
     a.div_ceil(b) as u32
 }
 
