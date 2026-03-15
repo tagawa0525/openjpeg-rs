@@ -1,7 +1,6 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Memory-backed byte stream (C: opj_stream_private_t).
-#[allow(dead_code)]
 pub struct MemoryStream {
     data: Vec<u8>,
     position: usize,
@@ -9,71 +8,124 @@ pub struct MemoryStream {
 }
 
 impl MemoryStream {
-    pub fn new_input(_data: Vec<u8>) -> Self {
-        todo!()
+    /// Create an input stream from existing data.
+    pub fn new_input(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            position: 0,
+            is_input: true,
+        }
     }
 
+    /// Create an empty output stream.
     pub fn new_output() -> Self {
-        todo!()
+        Self {
+            data: Vec::new(),
+            position: 0,
+            is_input: false,
+        }
     }
 
-    pub fn read(&mut self, _buf: &mut [u8]) -> Result<usize> {
-        todo!()
+    /// Read bytes into `buf`. Returns actual bytes read.
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if !self.is_input {
+            return Err(Error::InvalidInput("cannot read from output stream".into()));
+        }
+        let available = self.data.len().saturating_sub(self.position);
+        let n = buf.len().min(available);
+        buf[..n].copy_from_slice(&self.data[self.position..self.position + n]);
+        self.position += n;
+        Ok(n)
     }
 
-    pub fn write(&mut self, _buf: &[u8]) -> Result<usize> {
-        todo!()
+    /// Write bytes from `buf`. Returns actual bytes written.
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        if self.is_input {
+            return Err(Error::InvalidInput("cannot write to input stream".into()));
+        }
+        let end = self.position + buf.len();
+        if end > self.data.len() {
+            self.data.resize(end, 0);
+        }
+        self.data[self.position..end].copy_from_slice(buf);
+        self.position = end;
+        Ok(buf.len())
     }
 
-    pub fn skip(&mut self, _n: i64) -> Result<()> {
-        todo!()
+    /// Skip `n` bytes forward (positive) or backward (negative).
+    pub fn skip(&mut self, n: i64) -> Result<()> {
+        let new_pos = if n >= 0 {
+            self.position.checked_add(n as usize)
+        } else {
+            self.position.checked_sub((-n) as usize)
+        };
+        match new_pos {
+            Some(p) if p <= self.data.len() => {
+                self.position = p;
+                Ok(())
+            }
+            _ => Err(Error::InvalidInput("skip out of bounds".into())),
+        }
     }
 
-    pub fn seek(&mut self, _pos: usize) -> Result<()> {
-        todo!()
+    /// Seek to absolute position.
+    pub fn seek(&mut self, pos: usize) -> Result<()> {
+        if pos > self.data.len() {
+            return Err(Error::InvalidInput("seek out of bounds".into()));
+        }
+        self.position = pos;
+        Ok(())
     }
 
+    /// Current position in stream.
     pub fn tell(&self) -> usize {
-        todo!()
+        self.position
     }
 
+    /// Bytes remaining from current position.
     pub fn bytes_left(&self) -> usize {
-        todo!()
+        self.data.len().saturating_sub(self.position)
     }
 
+    /// Access underlying data.
     pub fn data(&self) -> &[u8] {
-        todo!()
+        &self.data
     }
 }
 
-/// Write big-endian bytes (C: opj_write_bytes_BE).
-pub fn write_bytes_be(_buf: &mut [u8], _val: u32, _n: usize) {
-    todo!()
+// --- Byte order conversion functions ---
+
+/// Write `val` as `n` big-endian bytes to `buf` (C: opj_write_bytes_BE).
+pub fn write_bytes_be(buf: &mut [u8], val: u32, n: usize) {
+    let bytes = val.to_be_bytes();
+    buf[..n].copy_from_slice(&bytes[4 - n..]);
 }
 
-/// Read big-endian bytes (C: opj_read_bytes_BE).
-pub fn read_bytes_be(_buf: &[u8], _n: usize) -> u32 {
-    todo!()
+/// Read `n` big-endian bytes from `buf` as u32 (C: opj_read_bytes_BE).
+pub fn read_bytes_be(buf: &[u8], n: usize) -> u32 {
+    let mut bytes = [0u8; 4];
+    bytes[4 - n..].copy_from_slice(&buf[..n]);
+    u32::from_be_bytes(bytes)
 }
 
 /// Write f64 as big-endian (C: opj_write_double_BE).
-pub fn write_f64_be(_buf: &mut [u8], _val: f64) {
-    todo!()
+pub fn write_f64_be(buf: &mut [u8], val: f64) {
+    buf[..8].copy_from_slice(&val.to_be_bytes());
 }
 
 /// Read f64 from big-endian (C: opj_read_double_BE).
-pub fn read_f64_be(_buf: &[u8]) -> f64 {
-    todo!()
+pub fn read_f64_be(buf: &[u8]) -> f64 {
+    f64::from_be_bytes(buf[..8].try_into().unwrap())
 }
 
 /// Write f32 as big-endian (C: opj_write_float_BE).
-pub fn write_f32_be(_buf: &mut [u8], _val: f32) {
-    todo!()
+pub fn write_f32_be(buf: &mut [u8], val: f32) {
+    buf[..4].copy_from_slice(&val.to_be_bytes());
 }
 
 /// Read f32 from big-endian (C: opj_read_float_BE).
-pub fn read_f32_be(_buf: &[u8]) -> f32 {
-    todo!()
+pub fn read_f32_be(buf: &[u8]) -> f32 {
+    f32::from_be_bytes(buf[..4].try_into().unwrap())
 }
 
 #[cfg(test)]
@@ -83,7 +135,6 @@ mod tests {
     // --- Byte order conversion ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_read_bytes_be_1() {
         let mut buf = [0u8; 4];
         write_bytes_be(&mut buf, 0xAB, 1);
@@ -91,7 +142,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_read_bytes_be_2() {
         let mut buf = [0u8; 4];
         write_bytes_be(&mut buf, 0xABCD, 2);
@@ -101,7 +151,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_read_bytes_be_4() {
         let mut buf = [0u8; 4];
         write_bytes_be(&mut buf, 0xDEADBEEF, 4);
@@ -109,7 +158,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_read_f64_be() {
         let mut buf = [0u8; 8];
         let val = 3.14159265358980_f64;
@@ -119,7 +167,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_read_f32_be() {
         let mut buf = [0u8; 4];
         let val = 2.71829_f32;
@@ -131,7 +178,6 @@ mod tests {
     // --- MemoryStream ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn output_stream_write_and_read_back() {
         let mut stream = MemoryStream::new_output();
         let data = b"Hello, JPEG 2000!";
@@ -141,7 +187,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn input_stream_read() {
         let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let mut stream = MemoryStream::new_input(data);
@@ -155,17 +200,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn input_stream_read_at_end() {
         let data = vec![0x01, 0x02];
         let mut stream = MemoryStream::new_input(data);
         let mut buf = [0u8; 4];
         let n = stream.read(&mut buf).unwrap();
-        assert_eq!(n, 2); // Only 2 bytes available
+        assert_eq!(n, 2);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stream_seek_and_tell() {
         let data = vec![0; 100];
         let mut stream = MemoryStream::new_input(data);
@@ -176,7 +219,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stream_skip() {
         let data = vec![0; 100];
         let mut stream = MemoryStream::new_input(data);
@@ -187,7 +229,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stream_bytes_left() {
         let data = vec![0; 100];
         let mut stream = MemoryStream::new_input(data);
@@ -197,7 +238,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stream_seek_out_of_bounds() {
         let data = vec![0; 10];
         let mut stream = MemoryStream::new_input(data);
