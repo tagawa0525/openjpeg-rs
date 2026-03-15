@@ -671,6 +671,12 @@ impl<'a> Mqc<'a> {
     }
 
     fn byteout(&mut self) {
+        debug_assert!(
+            self.bp + 1 < self.buf.len(),
+            "buffer overflow in byteout: bp={} buf.len()={}",
+            self.bp,
+            self.buf.len()
+        );
         if self.buf[self.bp] == 0xff {
             self.bp += 1;
             self.buf[self.bp] = (self.c >> 20) as u8;
