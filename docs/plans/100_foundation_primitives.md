@@ -26,18 +26,22 @@ Status: IMPLEMENTED
 単一の `Error` enum と `Result<T>` 型エイリアス。
 
 ```rust
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("buffer too small")]
     BufferTooSmall,
+    #[error("end of stream")]
     EndOfStream,
+    #[error("I/O error: {0}")]
     IoError(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-Phase進行に伴いバリアントを追加する。`std::fmt::Display` と `std::error::Error` を実装。
+Phase進行に伴いバリアントを追加する。
 
 ### types.rs — 定数
 
@@ -282,7 +286,7 @@ pub mod image;
 
 ## 依存関係
 
-外部crate: なし（stdのみ）
+外部crate: `thiserror`（エラー型導出）
 
 ## テスト方針
 
