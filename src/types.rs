@@ -99,24 +99,31 @@ pub fn uint64_ceildiv_as_u32(a: u64, b: u64) -> u32 {
 /// Ceiling division by 2^b for signed integers (C: opj_int_ceildivpow2).
 #[inline]
 pub fn int_ceildivpow2(a: i32, b: i32) -> i32 {
+    debug_assert!(b >= 0 && b < 31, "int_ceildivpow2: shift must be in 0..31");
     ((a as i64 + (1i64 << b) - 1) >> b) as i32
 }
 
 /// Ceiling division by 2^b for i64 (C: opj_int64_ceildivpow2).
 #[inline]
 pub fn int64_ceildivpow2(a: i64, b: i32) -> i32 {
+    debug_assert!(
+        b >= 0 && b < 63,
+        "int64_ceildivpow2: shift must be in 0..63"
+    );
     ((a + (1i64 << b) - 1) >> b) as i32
 }
 
 /// Ceiling division by 2^b for unsigned integers (C: opj_uint_ceildivpow2).
 #[inline]
 pub fn uint_ceildivpow2(a: u32, b: u32) -> u32 {
+    debug_assert!(b < 32, "uint_ceildivpow2: shift must be in 0..32");
     ((a as u64 + (1u64 << b) - 1) >> b) as u32
 }
 
 /// Floor division by 2^b for signed integers (C: opj_int_floordivpow2).
 #[inline]
 pub fn int_floordivpow2(a: i32, b: i32) -> i32 {
+    debug_assert!(b >= 0 && b < 32, "int_floordivpow2: shift must be in 0..32");
     a >> b
 }
 
