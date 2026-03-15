@@ -10,23 +10,58 @@ pub static MCT_NORMS: [f64; 3] = [1.732, 0.8292, 0.8292];
 pub static MCT_NORMS_REAL: [f64; 3] = [1.732, 1.805, 1.573];
 
 /// Forward reversible MCT (RCT) (C: opj_mct_encode).
-pub fn mct_encode(_c0: &mut [i32], _c1: &mut [i32], _c2: &mut [i32]) {
-    todo!()
+/// Y = (R + 2G + B) >> 2, Cb = B - G, Cr = R - G
+pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    for i in 0..n {
+        let r = c0[i];
+        let g = c1[i];
+        let b = c2[i];
+        c0[i] = (r + (g * 2) + b) >> 2;
+        c1[i] = b - g;
+        c2[i] = r - g;
+    }
 }
 
 /// Inverse reversible MCT (RCT) (C: opj_mct_decode).
-pub fn mct_decode(_c0: &mut [i32], _c1: &mut [i32], _c2: &mut [i32]) {
-    todo!()
+/// G = Y - (Cb + Cr) >> 2, R = Cr + G, B = Cb + G
+pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    for i in 0..n {
+        let y = c0[i];
+        let u = c1[i];
+        let v = c2[i];
+        let g = y - ((u + v) >> 2);
+        c0[i] = v + g;
+        c1[i] = g;
+        c2[i] = u + g;
+    }
 }
 
 /// Forward irreversible MCT (ICT) (C: opj_mct_encode_real).
-pub fn mct_encode_real(_c0: &mut [f32], _c1: &mut [f32], _c2: &mut [f32]) {
-    todo!()
+pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    for i in 0..n {
+        let r = c0[i];
+        let g = c1[i];
+        let b = c2[i];
+        c0[i] = 0.299f32 * r + 0.587f32 * g + 0.114f32 * b;
+        c1[i] = -0.16875f32 * r - 0.331260f32 * g + 0.5f32 * b;
+        c2[i] = 0.5f32 * r - 0.41869f32 * g - 0.08131f32 * b;
+    }
 }
 
 /// Inverse irreversible MCT (ICT) (C: opj_mct_decode_real).
-pub fn mct_decode_real(_c0: &mut [f32], _c1: &mut [f32], _c2: &mut [f32]) {
-    todo!()
+pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    for i in 0..n {
+        let y = c0[i];
+        let u = c1[i];
+        let v = c2[i];
+        c0[i] = y + v * 1.402f32;
+        c1[i] = y - u * 0.34413f32 - v * 0.71414f32;
+        c2[i] = y + u * 1.772f32;
+    }
 }
 
 /// Get RCT normalization coefficient (C: opj_mct_getnorm).
@@ -40,18 +75,62 @@ pub fn mct_getnorm_real(compno: u32) -> f64 {
 }
 
 /// Forward custom MCT (C: opj_mct_encode_custom).
-pub fn mct_encode_custom(_matrix: &[f32], _data: &mut [&mut [i32]], _n: usize) -> Result<()> {
-    todo!()
+/// Matrix is nb_comps×nb_comps in row-major order, applied as fixed-point multiply.
+pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]], n: usize) -> Result<()> {
+    let nb_comps = data.len();
+    let multiplier = 1 << 13;
+    let int_matrix: Vec<i32> = matrix
+        .iter()
+        .map(|&v| (v * multiplier as f32) as i32)
+        .collect();
+    let mut current = vec![0i32; nb_comps];
+
+    for i in 0..n {
+        for j in 0..nb_comps {
+            current[j] = data[j][i];
+        }
+        for j in 0..nb_comps {
+            let mut sum = 0i32;
+            for k in 0..nb_comps {
+                sum += int_fix_mul(int_matrix[j * nb_comps + k], current[k]);
+            }
+            data[j][i] = sum;
+        }
+    }
+    Ok(())
 }
 
 /// Inverse custom MCT (C: opj_mct_decode_custom).
-pub fn mct_decode_custom(_matrix: &[f32], _data: &mut [&mut [f32]], _n: usize) -> Result<()> {
-    todo!()
+/// Matrix is nb_comps×nb_comps, applied as floating-point multiply.
+pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> Result<()> {
+    let nb_comps = data.len();
+    let mut current = vec![0.0f32; nb_comps];
+
+    for i in 0..n {
+        for j in 0..nb_comps {
+            current[j] = data[j][i];
+        }
+        for j in 0..nb_comps {
+            let mut sum = 0.0f32;
+            for k in 0..nb_comps {
+                sum += matrix[j * nb_comps + k] * current[k];
+            }
+            data[j][i] = sum;
+        }
+    }
+    Ok(())
 }
 
 /// Calculate column L2 norms of a matrix (C: opj_calculate_norms).
-pub fn calculate_norms(_norms: &mut [f64], _matrix: &[f32], _nb_comps: usize) {
-    todo!()
+pub fn calculate_norms(norms: &mut [f64], matrix: &[f32], nb_comps: usize) {
+    for i in 0..nb_comps {
+        let mut sum = 0.0f64;
+        for j in 0..nb_comps {
+            let val = matrix[j * nb_comps + i] as f64;
+            sum += val * val;
+        }
+        norms[i] = sum.sqrt();
+    }
 }
 
 #[cfg(test)]
@@ -77,7 +156,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rct_roundtrip_lossless() {
         let mut c0 = vec![100i32, 200, 50, 255];
         let mut c1 = vec![150, 100, 200, 128];
@@ -93,7 +171,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rct_encode_known_values() {
         // R=100, G=150, B=80
         // Y = (100 + 300 + 80) >> 2 = 480 >> 2 = 120
@@ -109,7 +186,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ict_roundtrip_within_tolerance() {
         let mut c0 = vec![100.0f32, 200.0, 50.0];
         let mut c1 = vec![150.0, 100.0, 200.0];
@@ -145,9 +221,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn custom_mct_identity_is_noop() {
-        // Identity matrix should leave data unchanged
         #[rustfmt::skip]
         let identity = [
             1.0f32, 0.0, 0.0,
@@ -170,7 +244,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn calculate_norms_identity() {
         #[rustfmt::skip]
         let matrix = [
