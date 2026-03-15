@@ -6,7 +6,7 @@ Status: PLANNED
 
 C版 OpenJPEG（uclouvain/openjpeg）をRustに純粋再実装する。JPEG 2000コーデック（ITU-T T.800 / ISO/IEC 15444-1）のリファレンス実装で、コアライブラリ約42K LOC + CLIツール約11K LOC。
 
-単一crate構成（workspace不使用）。コアコーデックは外部crateゼロ（stdのみ）。Rust edition 2024。
+単一crate構成（workspace不使用）。コアコーデックの外部依存は `thiserror` のみ。Rust edition 2024。
 
 ## スコープ外
 
@@ -77,7 +77,7 @@ JPIP（Part-9）、JPWL（Part-11）、JP3D（Part-10）、JPSEC（Part-8）、J
 
 ### エラーハンドリング
 
-`std::error::Error` のみ（外部crate不使用）。単一の `Error` enum + `Result<T>` 型エイリアス。
+`thiserror` による `Error` enum 導出 + `Result<T>` 型エイリアス。
 
 ### ストリームI/O
 
