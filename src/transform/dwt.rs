@@ -323,6 +323,21 @@ pub fn interleave_v<T: Copy>(
     }
 }
 
+/// Validate 2D DWT parameters.
+fn validate_2d_params(data_len: usize, w: usize, h: usize, stride: usize) -> Result<()> {
+    if stride < w {
+        return Err(crate::error::Error::InvalidInput(
+            "stride must be >= width".into(),
+        ));
+    }
+    if data_len < stride * (h - 1) + w {
+        return Err(crate::error::Error::InvalidInput(
+            "data buffer too small for w×h with given stride".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Forward 2D 5-3 DWT (C: opj_dwt_encode).
 ///
 /// `data`: row-major tile data, `w`×`h` pixels with row stride `stride`.
@@ -339,6 +354,7 @@ pub fn dwt_encode_2d_53(
     if num_res <= 1 || w == 0 || h == 0 {
         return Ok(());
     }
+    validate_2d_params(data.len(), w, h, stride)?;
     // Resolution dimensions: level i has size ceil(w / 2^i), ceil(h / 2^i)
     // Process from finest to coarsest (level 0 = finest = num_res-1 decompositions)
     let mut tmp = vec![0i32; w.max(h)];
@@ -395,6 +411,7 @@ pub fn dwt_decode_2d_53(
     if num_res <= 1 || w == 0 || h == 0 {
         return Ok(());
     }
+    validate_2d_params(data.len(), w, h, stride)?;
     let mut tmp = vec![0i32; w.max(h)];
     // Process from coarsest to finest (reverse of encode)
     for level in 0..num_res - 1 {
@@ -447,6 +464,7 @@ pub fn dwt_encode_2d_97(
     if num_res <= 1 || w == 0 || h == 0 {
         return Ok(());
     }
+    validate_2d_params(data.len(), w, h, stride)?;
     let mut tmp = vec![0.0f32; w.max(h)];
     for level in (0..num_res - 1).rev() {
         let rw = ((w - 1) >> level) + 1;
@@ -496,6 +514,7 @@ pub fn dwt_decode_2d_97(
     if num_res <= 1 || w == 0 || h == 0 {
         return Ok(());
     }
+    validate_2d_params(data.len(), w, h, stride)?;
     let mut tmp = vec![0.0f32; w.max(h)];
     for level in 0..num_res - 1 {
         let rw = ((w - 1) >> level) + 1;
