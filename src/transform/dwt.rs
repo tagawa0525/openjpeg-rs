@@ -200,6 +200,46 @@ pub fn dwt_decode_1_97(data: &mut [f32], sn: usize, dn: usize, cas: bool) {
     }
 }
 
+/// Horizontal deinterleave: split interleaved `[s0, d0, s1, d1, ...]` into
+/// `[s0, s1, ..., d0, d1, ...]` (separated low/high subbands).
+///
+/// `src`: interleaved input, `dst`: separated output.
+/// `sn`: low-pass count, `dn`: high-pass count, `cas`: subgrid parity.
+pub fn deinterleave_h<T: Copy>(_src: &[T], _dst: &mut [T], _sn: usize, _dn: usize, _cas: bool) {
+    todo!()
+}
+
+/// Horizontal interleave: merge separated `[s0, s1, ..., d0, d1, ...]` back
+/// into interleaved `[s0, d0, s1, d1, ...]`.
+pub fn interleave_h<T: Copy>(_src: &[T], _dst: &mut [T], _sn: usize, _dn: usize, _cas: bool) {
+    todo!()
+}
+
+/// Vertical deinterleave: split interleaved column data (with stride) into
+/// separated low/high subbands.
+pub fn deinterleave_v<T: Copy>(
+    _src: &[T],
+    _dst: &mut [T],
+    _sn: usize,
+    _dn: usize,
+    _cas: bool,
+    _stride: usize,
+) {
+    todo!()
+}
+
+/// Vertical interleave: merge separated subbands back into strided column data.
+pub fn interleave_v<T: Copy>(
+    _src: &[T],
+    _dst: &mut [T],
+    _sn: usize,
+    _dn: usize,
+    _cas: bool,
+    _stride: usize,
+) {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +387,76 @@ mod tests {
         dwt_encode_1_97(&mut data, 1, 1, false);
         dwt_decode_1_97(&mut data, 1, 1, false);
         assert_f32_eq(&data, &original, 1e-4);
+    }
+
+    // ==================== Deinterleave / Interleave tests ====================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn deinterleave_h_cas0() {
+        // [s0, d0, s1, d1, s2, d2] → [s0, s1, s2, d0, d1, d2]
+        let src = [10, 20, 30, 40, 50, 60];
+        let mut dst = [0i32; 6];
+        deinterleave_h(&src, &mut dst, 3, 3, false);
+        assert_eq!(dst, [10, 30, 50, 20, 40, 60]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn deinterleave_h_cas1() {
+        // cas=1: [d0, s0, d1, s1, d2, s2] → [s0, s1, s2, d0, d1, d2]
+        let src = [10, 20, 30, 40, 50, 60];
+        let mut dst = [0i32; 6];
+        deinterleave_h(&src, &mut dst, 3, 3, true);
+        assert_eq!(dst, [20, 40, 60, 10, 30, 50]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn interleave_h_cas0() {
+        // [s0, s1, s2, d0, d1, d2] → [s0, d0, s1, d1, s2, d2]
+        let src = [10, 30, 50, 20, 40, 60];
+        let mut dst = [0i32; 6];
+        interleave_h(&src, &mut dst, 3, 3, false);
+        assert_eq!(dst, [10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn deinterleave_interleave_h_roundtrip() {
+        let original = [10, 20, 30, 40, 50, 60, 70];
+        let mut separated = [0i32; 7];
+        let mut restored = [0i32; 7];
+        deinterleave_h(&original, &mut separated, 4, 3, false);
+        interleave_h(&separated, &mut restored, 4, 3, false);
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn deinterleave_v_cas0() {
+        // Column data with stride=4:
+        // row 0: [s0, ...]  (even row → low-pass)
+        // row 1: [d0, ...]  (odd row → high-pass)
+        // row 2: [s1, ...]
+        // row 3: [d1, ...]
+        // Output: [s0, s1, d0, d1]
+        let src = [10, 0, 0, 0, 20, 0, 0, 0, 30, 0, 0, 0, 40, 0, 0, 0];
+        let mut dst = [0i32; 4];
+        deinterleave_v(&src, &mut dst, 2, 2, false, 4);
+        assert_eq!(dst, [10, 30, 20, 40]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn interleave_v_cas0() {
+        // [s0, s1, d0, d1] → column with stride=4
+        let src = [10, 30, 20, 40];
+        let mut dst = [0i32; 16];
+        interleave_v(&src, &mut dst, 2, 2, false, 4);
+        assert_eq!(dst[0], 10);
+        assert_eq!(dst[4], 20);
+        assert_eq!(dst[8], 30);
+        assert_eq!(dst[12], 40);
     }
 }
