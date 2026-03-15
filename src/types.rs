@@ -213,12 +213,15 @@ pub const T1_SIGMA_15: u32 = 1 << 15;
 pub const T1_SIGMA_16: u32 = 1 << 16;
 pub const T1_SIGMA_17: u32 = 1 << 17;
 
-// CHI: sign state
+// CHI: sign state (with bit index _I variants for shift computation)
 pub const T1_CHI_0: u32 = 1 << 18;
+pub const T1_CHI_0_I: u32 = 18;
 pub const T1_CHI_1: u32 = 1 << 19;
+pub const T1_CHI_1_I: u32 = 19;
 pub const T1_MU_0: u32 = 1 << 20;
 pub const T1_PI_0: u32 = 1 << 21;
 pub const T1_CHI_2: u32 = 1 << 22;
+pub const T1_CHI_2_I: u32 = 22;
 pub const T1_MU_1: u32 = 1 << 23;
 pub const T1_PI_1: u32 = 1 << 24;
 pub const T1_CHI_3: u32 = 1 << 25;
@@ -228,6 +231,7 @@ pub const T1_CHI_4: u32 = 1 << 28;
 pub const T1_MU_3: u32 = 1 << 29;
 pub const T1_PI_3: u32 = 1 << 30;
 pub const T1_CHI_5: u32 = 1 << 31;
+pub const T1_CHI_5_I: u32 = 31;
 
 // Direction aliases for data point 0 (shift by 3 bits per row).
 pub const T1_SIGMA_NW: u32 = T1_SIGMA_0;

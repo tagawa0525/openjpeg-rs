@@ -104,6 +104,79 @@ impl T1 {
     pub fn flags_index(&self, x: u32, y: u32) -> usize {
         x as usize + 1 + ((y as usize / 4) + 1) * self.flags_stride()
     }
+
+    /// Set orient for ZC context lookup (C: mqc->lut_ctxno_zc_orient).
+    #[inline]
+    pub fn set_orient(&mut self, _orient: u32) {
+        todo!()
+    }
+}
+
+// --- Context helper functions ---
+
+#[allow(unused_imports)]
+use crate::coding::t1_luts::*;
+
+/// Zero Coding context number (C: opj_t1_getctxno_zc).
+#[inline]
+pub fn getctxno_zc(_orient_offset: usize, _f: u32) -> u8 {
+    todo!()
+}
+
+/// Sign context / SPB index (C: opj_t1_getctxtno_sc_or_spb_index).
+#[inline]
+pub fn getctxtno_sc_or_spb_index(_fx: u32, _pfx: u32, _nfx: u32, _ci: u32) -> u32 {
+    todo!()
+}
+
+/// Sign Coding context number (C: opj_t1_getctxno_sc).
+#[inline]
+pub fn getctxno_sc(_lu: u32) -> u8 {
+    todo!()
+}
+
+/// Magnitude context number (C: opj_t1_getctxno_mag).
+#[inline]
+pub fn getctxno_mag(_f: u32) -> u32 {
+    todo!()
+}
+
+/// Sign Prediction Bit (C: opj_t1_getspb).
+#[inline]
+pub fn getspb(_lu: u32) -> u8 {
+    todo!()
+}
+
+/// NMSEDEC for significance pass (C: opj_t1_getnmsedec_sig).
+#[inline]
+pub fn getnmsedec_sig(_x: u32, _bitpos: u32) -> i16 {
+    todo!()
+}
+
+/// NMSEDEC for refinement pass (C: opj_t1_getnmsedec_ref).
+#[inline]
+pub fn getnmsedec_ref(_x: u32, _bitpos: u32) -> i16 {
+    todo!()
+}
+
+// --- Signed Magnitude Representation helpers (C: opj_smr_abs, opj_smr_sign, opj_to_smr) ---
+
+/// Absolute value from signed magnitude representation.
+#[inline]
+pub fn smr_abs(_x: i32) -> u32 {
+    todo!()
+}
+
+/// Sign bit from signed magnitude representation (0 = positive, 1 = negative).
+#[inline]
+pub fn smr_sign(_x: i32) -> u32 {
+    todo!()
+}
+
+/// Convert two's complement to signed magnitude representation.
+#[inline]
+pub fn to_smr(_x: i32) -> i32 {
+    todo!()
 }
 
 #[cfg(test)]
@@ -282,5 +355,136 @@ mod tests {
         assert_eq!(t1.w, 4);
         assert_eq!(t1.h, 4);
         assert_eq!(t1.data.len(), 16);
+    }
+
+    // --- Context helper tests ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_zc_no_neighbours() {
+        // No significant neighbours -> context 0 for all orients
+        for orient in 0..4u32 {
+            assert_eq!(getctxno_zc((orient as usize) << 9, 0), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_zc_known_values() {
+        // Orient 0 (LL/LH), north significant (T1_SIGMA_N = bit 1)
+        let f = T1_SIGMA_N; // = 0x02
+        let ctx = getctxno_zc(0, f);
+        assert_eq!(ctx, LUT_CTXNO_ZC[T1_SIGMA_N as usize]);
+
+        // Orient 2 (HH), all 8 neighbours significant
+        let f_all = T1_SIGMA_NEIGHBOURS;
+        let ctx = getctxno_zc(2 << 9, f_all);
+        assert_eq!(ctx, LUT_CTXNO_ZC[(2 << 9) + f_all as usize]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_mag_no_neighbours_not_refined() {
+        // No neighbours, no MU -> base MAG context
+        assert_eq!(getctxno_mag(0), T1_CTXNO_MAG as u32);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_mag_with_neighbours() {
+        // Has significant neighbour, no MU -> MAG + 1
+        assert_eq!(getctxno_mag(T1_SIGMA_N), T1_CTXNO_MAG as u32 + 1);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_mag_already_refined() {
+        // MU_0 set -> MAG + 2 regardless of neighbours
+        assert_eq!(getctxno_mag(T1_MU_0), T1_CTXNO_MAG as u32 + 2);
+        assert_eq!(getctxno_mag(T1_MU_0 | T1_SIGMA_N), T1_CTXNO_MAG as u32 + 2);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxno_sc_from_lut() {
+        // Verify getctxno_sc delegates to LUT_CTXNO_SC
+        assert_eq!(getctxno_sc(0), LUT_CTXNO_SC[0]);
+        assert_eq!(getctxno_sc(0xFF), LUT_CTXNO_SC[0xFF]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getspb_from_lut() {
+        // Verify getspb delegates to LUT_SPB
+        assert_eq!(getspb(0), LUT_SPB[0]);
+        assert_eq!(getspb(0xFF), LUT_SPB[0xFF]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getnmsedec_sig_bitpos_zero() {
+        // bitpos=0 uses LUT_NMSEDEC_SIG0
+        assert_eq!(getnmsedec_sig(0, 0), LUT_NMSEDEC_SIG0[0]);
+        assert_eq!(getnmsedec_sig(42, 0), LUT_NMSEDEC_SIG0[42]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getnmsedec_sig_bitpos_nonzero() {
+        // bitpos>0 uses LUT_NMSEDEC_SIG with shifted index
+        let x: u32 = 0b1010_0110;
+        let bitpos: u32 = 2;
+        let idx = ((x >> bitpos) as usize) & 0x7F;
+        assert_eq!(getnmsedec_sig(x, bitpos), LUT_NMSEDEC_SIG[idx]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getnmsedec_ref_bitpos_zero() {
+        assert_eq!(getnmsedec_ref(0, 0), LUT_NMSEDEC_REF0[0]);
+        assert_eq!(getnmsedec_ref(42, 0), LUT_NMSEDEC_REF0[42]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getnmsedec_ref_bitpos_nonzero() {
+        let x: u32 = 0b1010_0110;
+        let bitpos: u32 = 2;
+        let idx = ((x >> bitpos) as usize) & 0x7F;
+        assert_eq!(getnmsedec_ref(x, bitpos), LUT_NMSEDEC_REF[idx]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn smr_roundtrip() {
+        // Positive
+        let v = to_smr(42);
+        assert_eq!(smr_abs(v), 42);
+        assert_eq!(smr_sign(v), 0);
+
+        // Negative
+        let v = to_smr(-42);
+        assert_eq!(smr_abs(v), 42);
+        assert_eq!(smr_sign(v), 1);
+
+        // Zero
+        let v = to_smr(0);
+        assert_eq!(smr_abs(v), 0);
+        assert_eq!(smr_sign(v), 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn set_orient_offset() {
+        let mut t1 = T1::new(true);
+        t1.set_orient(2);
+        assert_eq!(t1.lut_ctxno_zc_orient_offset, 2 << 9);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn getctxtno_sc_or_spb_index_zero_flags() {
+        // All flags zero -> lu should be 0
+        assert_eq!(getctxtno_sc_or_spb_index(0, 0, 0, 0), 0);
     }
 }
