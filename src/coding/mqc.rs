@@ -496,7 +496,9 @@ impl<'a> Mqc<'a> {
 
     /// Return extra bytes for non-terminating BYPASS pass (C: opj_mqc_bypass_get_extra_bytes).
     pub fn bypass_get_extra_bytes(&self, erterm: bool) -> u32 {
-        if self.ct < 7 || (self.ct == 7 && (erterm || self.buf[self.bp - 1] != 0xff)) {
+        if self.ct < 7
+            || (self.ct == 7 && (erterm || (self.bp > 0 && self.buf[self.bp - 1] != 0xff)))
+        {
             1
         } else {
             0
