@@ -57,7 +57,8 @@ impl MemoryStream {
         let new_pos = if n >= 0 {
             self.position.checked_add(n as usize)
         } else {
-            self.position.checked_sub((-n) as usize)
+            n.checked_neg()
+                .and_then(|abs| self.position.checked_sub(abs as usize))
         };
         match new_pos {
             Some(p) if p <= self.data.len() => {
