@@ -216,15 +216,31 @@ pub fn to_smr(x: i32) -> i32 {
 /// significance to all 8 neighbours. `ci` is the sub-row index (0..3).
 /// `vsc` disables north propagation for the top row of a VSC stripe.
 #[inline]
-pub fn update_flags(
-    _flags: &mut [u32],
-    _flagsp: usize,
-    _ci: u32,
-    _s: u32,
-    _stride: usize,
-    _vsc: bool,
-) {
-    todo!()
+pub fn update_flags(flags: &mut [u32], flagsp: usize, ci: u32, s: u32, stride: usize, vsc: bool) {
+    // East neighbour: set SIGMA_5 (= "west is significant" from east's perspective)
+    flags[flagsp - 1] |= T1_SIGMA_5 << (3 * ci);
+
+    // Mark target as significant + set sign
+    flags[flagsp] |= ((s << T1_CHI_1_I) | T1_SIGMA_4) << (3 * ci);
+
+    // West neighbour: set SIGMA_3 (= "east is significant" from west's perspective)
+    flags[flagsp + 1] |= T1_SIGMA_3 << (3 * ci);
+
+    // North: NW, N, NE (only for ci==0 and not VSC)
+    if ci == 0 && !vsc {
+        let north = flagsp - stride;
+        flags[north] |= (s << T1_CHI_5_I) | T1_SIGMA_16;
+        flags[north - 1] |= T1_SIGMA_17;
+        flags[north + 1] |= T1_SIGMA_15;
+    }
+
+    // South: SW, S, SE (only for ci==3)
+    if ci == 3 {
+        let south = flagsp + stride;
+        flags[south] |= (s << T1_CHI_0_I) | T1_SIGMA_1;
+        flags[south - 1] |= T1_SIGMA_2;
+        flags[south + 1] |= T1_SIGMA_0;
+    }
 }
 
 #[cfg(test)]
@@ -534,7 +550,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_sets_sigma_this() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         update_flags(&mut flags, fp, 0, 0, stride, false);
@@ -543,7 +558,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_sets_chi_sign() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         // s=1 (negative sign)
@@ -553,7 +567,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_propagates_east_west() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         update_flags(&mut flags, fp, 0, 0, stride, false);
@@ -564,7 +577,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_propagates_north() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         // ci=0, vsc=false: should propagate north
@@ -575,7 +587,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_vsc_blocks_north() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         // ci=0, vsc=true: should NOT propagate north
@@ -585,7 +596,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_propagates_south() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         // ci=3: should propagate south
@@ -596,7 +606,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn update_flags_ci1_no_north_south() {
         let (mut flags, fp, stride) = setup_flags(8, 8);
         // ci=1: should NOT propagate to north or south neighbour rows
