@@ -1008,22 +1008,44 @@ mod tests {
 
     #[test]
     fn bypass_encode_decode_roundtrip() {
-        let mut buf = vec![0u8; 256];
-        let bits = [1u32, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1];
+        // 8 bits fits in exactly one byte with no 0xFF bit-stuffing
+        let bits = [1u32, 0, 1, 1, 0, 0, 1, 0];
+        let num_before;
+        let num_after;
+        let mut enc_buf = vec![0u8; 256];
         {
-            let mut mqc = Mqc::new(&mut buf);
+            let mut mqc = Mqc::new(&mut enc_buf);
             mqc.reset_states();
             mqc.init_enc();
-            mqc.set_curctx(0);
-            mqc.encode(0);
-            mqc.encode(1);
-            mqc.flush();
+            mqc.flush(); // advance bp past the padding byte
+            num_before = mqc.num_bytes();
             mqc.bypass_init_enc();
             for &b in &bits {
                 mqc.bypass_enc(b);
             }
             mqc.bypass_flush_enc(false);
+            num_after = mqc.num_bytes();
         }
+
+        let bypass_bytes = num_after.saturating_sub(num_before);
+        assert!(bypass_bytes > 0, "bypass must emit at least one byte");
+
+        // Extract bypass data: encoder uses buf[0] as padding, data starts at buf[1]
+        let bypass_start = 1 + num_before;
+        let bypass_end = 1 + num_after;
+        let bypass_len = bypass_end - bypass_start;
+        let mut dec_buf = vec![0u8; bypass_len + COMMON_CBLK_DATA_EXTRA];
+        dec_buf[..bypass_len].copy_from_slice(&enc_buf[bypass_start..bypass_end]);
+
+        let mut mqc = Mqc::new(&mut dec_buf);
+        mqc.raw_init_dec(bypass_len);
+        let decoded: Vec<u32> = (0..bits.len()).map(|_| mqc.raw_decode()).collect();
+        assert_eq!(
+            decoded.as_slice(),
+            bits.as_slice(),
+            "bypass encode/decode mismatch"
+        );
+        mqc.finish_dec();
     }
 
     #[test]
