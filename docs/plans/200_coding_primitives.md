@@ -200,5 +200,5 @@ pub struct SparseArray {
 ## 依存関係
 
 - `coding/mqc.rs`: `crate::types`（定数 `COMMON_CBLK_DATA_EXTRA`）
-- `coding/tgt.rs`: `crate::io::bio::Bio`、`crate::types`（`uint_ceildiv`）
+- `coding/tgt.rs`: `crate::io::bio::Bio`、`crate::error::Result`
 - `coding/sparse_array.rs`: `crate::types`（`uint_ceildiv`）
