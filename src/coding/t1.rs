@@ -94,7 +94,11 @@ impl T1 {
     /// Partial strips (when h is not a multiple of 4) have PI bits set for
     /// unused sub-rows.
     pub fn allocate_buffers(&mut self, w: u32, h: u32) -> Result<()> {
-        debug_assert!(w <= 1024 && h <= 1024 && w * h <= 4096);
+        if w > 1024 || h > 1024 || w * h > 4096 {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "code-block dimensions out of range: w={w}, h={h} (max 1024x1024, w*h<=4096)"
+            )));
+        }
 
         let datasize = (w * h) as usize;
         let flags_stride = w as usize + 2;
