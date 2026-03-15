@@ -214,6 +214,19 @@ impl TagTree {
 }
 
 #[cfg(test)]
+impl TagTree {
+    fn node_value(&self, idx: usize) -> i32 {
+        self.nodes[idx].value
+    }
+    fn node_low(&self, idx: usize) -> i32 {
+        self.nodes[idx].low
+    }
+    fn node_known(&self, idx: usize) -> bool {
+        self.nodes[idx].known
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -247,6 +260,11 @@ mod tests {
         tree.set_value(0, 5);
         tree.reset();
         assert_eq!(tree.num_nodes(), 5);
+        for i in 0..tree.num_nodes() {
+            assert_eq!(tree.node_value(i), 999, "node {i} value not reset");
+            assert_eq!(tree.node_low(i), 0, "node {i} low not reset");
+            assert!(!tree.node_known(i), "node {i} known not reset");
+        }
     }
 
     #[test]
