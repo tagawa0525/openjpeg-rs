@@ -3,7 +3,6 @@
 use crate::io::bio::Bio;
 
 /// Tag tree node.
-#[allow(dead_code)]
 struct TgtNode {
     parent: Option<usize>,
     value: i32,
@@ -12,96 +11,242 @@ struct TgtNode {
 }
 
 /// Tag tree (C: opj_tgt_tree_t).
-#[allow(dead_code)]
+///
+/// Hierarchical structure for progressive encoding of inclusion/zero-bit-plane
+/// information in Tier-2 coding. Leaf values propagate upward as minimums.
 pub struct TagTree {
+    #[allow(dead_code)]
     numleafsh: u32,
+    #[allow(dead_code)]
     numleafsv: u32,
     nodes: Vec<TgtNode>,
 }
 
-#[allow(dead_code)]
 impl TagTree {
-    pub fn new(_numleafsh: u32, _numleafsv: u32) -> Self {
-        todo!()
+    /// Create a new tag tree (C: opj_tgt_create).
+    pub fn new(numleafsh: u32, numleafsv: u32) -> Self {
+        // Calculate total nodes across all levels
+        let mut nplh = vec![numleafsh as i32];
+        let mut nplv = vec![numleafsv as i32];
+        let mut total_nodes = 0u32;
+        loop {
+            let n = (nplh.last().unwrap() * nplv.last().unwrap()) as u32;
+            total_nodes += n;
+            if n <= 1 {
+                break;
+            }
+            nplh.push((nplh.last().unwrap() + 1) / 2);
+            nplv.push((nplv.last().unwrap() + 1) / 2);
+        }
+
+        let mut nodes: Vec<TgtNode> = (0..total_nodes)
+            .map(|_| TgtNode {
+                parent: None,
+                value: 999,
+                low: 0,
+                known: false,
+            })
+            .collect();
+
+        // Set up parent pointers
+        let num_levels = nplh.len();
+        let mut node_idx = 0usize;
+        let mut parent_base = (numleafsh * numleafsv) as usize;
+        let mut parent_idx;
+        let mut parent_row_start;
+
+        for level in 0..num_levels - 1 {
+            let w = nplh[level];
+            let h = nplv[level];
+            let parent_w = nplh[level + 1];
+            parent_idx = parent_base;
+            parent_row_start = parent_base;
+
+            for j in 0..h {
+                let mut k = w;
+                while k > 0 {
+                    k -= 1;
+                    nodes[node_idx].parent = Some(parent_idx);
+                    node_idx += 1;
+                    if k > 0 {
+                        k -= 1;
+                        nodes[node_idx].parent = Some(parent_idx);
+                        node_idx += 1;
+                    }
+                    parent_idx += 1;
+                }
+                if (j & 1) != 0 || j == h - 1 {
+                    parent_row_start = parent_idx;
+                } else {
+                    parent_idx = parent_row_start;
+                    parent_row_start += parent_w as usize;
+                }
+            }
+
+            parent_base += (parent_w * nplv[level + 1]) as usize;
+        }
+        // Root has no parent (already None)
+
+        Self {
+            numleafsh,
+            numleafsv,
+            nodes,
+        }
     }
+
+    /// Total number of nodes in the tree.
     pub fn num_nodes(&self) -> usize {
         self.nodes.len()
     }
+
+    /// Reset all node values to 999 (C: opj_tgt_reset).
     pub fn reset(&mut self) {
-        todo!()
+        for node in &mut self.nodes {
+            node.value = 999;
+            node.low = 0;
+            node.known = false;
+        }
     }
-    pub fn set_value(&mut self, _leafno: u32, _value: i32) {
-        todo!()
+
+    /// Set leaf value and propagate minimum upward (C: opj_tgt_setvalue).
+    pub fn set_value(&mut self, leafno: u32, value: i32) {
+        let mut idx = leafno as usize;
+        while self.nodes[idx].value > value {
+            self.nodes[idx].value = value;
+            match self.nodes[idx].parent {
+                Some(p) => idx = p,
+                None => break,
+            }
+        }
     }
-    pub fn encode(&mut self, _bio: &mut Bio, _leafno: u32, _threshold: i32) {
-        todo!()
+
+    /// Encode a leaf value up to threshold (C: opj_tgt_encode).
+    pub fn encode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) {
+        // Walk from leaf to root, collect path
+        let mut stack = Vec::new();
+        let mut idx = leafno as usize;
+        while let Some(parent) = self.nodes[idx].parent {
+            stack.push(idx);
+            idx = parent;
+        }
+        // idx is now root
+
+        let mut low = 0i32;
+        loop {
+            if low > self.nodes[idx].low {
+                self.nodes[idx].low = low;
+            } else {
+                low = self.nodes[idx].low;
+            }
+
+            while low < threshold {
+                if low >= self.nodes[idx].value {
+                    if !self.nodes[idx].known {
+                        bio.write(1, 1).unwrap();
+                        self.nodes[idx].known = true;
+                    }
+                    break;
+                }
+                bio.write(0, 1).unwrap();
+                low += 1;
+            }
+
+            self.nodes[idx].low = low;
+            match stack.pop() {
+                Some(next) => idx = next,
+                None => break,
+            }
+        }
     }
-    pub fn decode(&mut self, _bio: &mut Bio, _leafno: u32, _threshold: i32) -> u32 {
-        todo!()
+
+    /// Decode a leaf value up to threshold (C: opj_tgt_decode).
+    /// Returns 1 if value < threshold, 0 otherwise.
+    pub fn decode(&mut self, bio: &mut Bio, leafno: u32, threshold: i32) -> u32 {
+        // Walk from leaf to root, collect path
+        let mut stack = Vec::new();
+        let mut idx = leafno as usize;
+        while let Some(parent) = self.nodes[idx].parent {
+            stack.push(idx);
+            idx = parent;
+        }
+
+        let mut low = 0i32;
+        loop {
+            if low > self.nodes[idx].low {
+                self.nodes[idx].low = low;
+            } else {
+                low = self.nodes[idx].low;
+            }
+
+            while low < threshold && low < self.nodes[idx].value {
+                if bio.read(1).unwrap() != 0 {
+                    self.nodes[idx].value = low;
+                } else {
+                    low += 1;
+                }
+            }
+
+            self.nodes[idx].low = low;
+            match stack.pop() {
+                Some(next) => idx = next,
+                None => break,
+            }
+        }
+
+        if self.nodes[idx].value < threshold {
+            1
+        } else {
+            0
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::bio::Bio;
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_1x1() {
         let tree = TagTree::new(1, 1);
-        // 1x1 tree has exactly 1 node (the root/leaf)
         assert_eq!(tree.num_nodes(), 1);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_2x2() {
         let tree = TagTree::new(2, 2);
-        // Level 0: 2x2=4 leaves, Level 1: 1x1=1 root => 5 nodes
         assert_eq!(tree.num_nodes(), 5);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_4x4() {
         let tree = TagTree::new(4, 4);
-        // Level 0: 4x4=16, Level 1: 2x2=4, Level 2: 1x1=1 => 21
         assert_eq!(tree.num_nodes(), 21);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_3x5() {
         let tree = TagTree::new(3, 5);
-        // Level 0: 3x5=15, Level 1: 2x3=6, Level 2: 1x2=2, Level 3: 1x1=1 => 24
         assert_eq!(tree.num_nodes(), 24);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn reset_sets_values_to_999() {
         let mut tree = TagTree::new(2, 2);
         tree.set_value(0, 5);
         tree.reset();
-        // After reset, encode/decode should work as if freshly created
         assert_eq!(tree.num_nodes(), 5);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn set_value_propagates_up() {
         let mut tree = TagTree::new(2, 2);
         tree.set_value(0, 3);
         tree.set_value(1, 5);
         tree.set_value(2, 7);
         tree.set_value(3, 2);
-        // Parent (root) should have min of all children = 2
-        // We verify through encode/decode roundtrip
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_roundtrip_single_leaf() {
         let mut tree = TagTree::new(1, 1);
         tree.set_value(0, 3);
@@ -117,12 +262,11 @@ mod tests {
         {
             let mut bio = Bio::decoder(&mut buf);
             let below = dec_tree.decode(&mut bio, 0, 4);
-            assert_eq!(below, 1); // value 3 < threshold 4
+            assert_eq!(below, 1);
         }
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_roundtrip_2x2() {
         let mut tree = TagTree::new(2, 2);
         tree.set_value(0, 1);
@@ -146,11 +290,9 @@ mod tests {
                 dec_tree.decode(&mut bio, leaf, 6);
             }
         }
-        // Verify all leaves decoded correctly by checking threshold returns
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_threshold_below_value() {
         let mut tree = TagTree::new(1, 1);
         tree.set_value(0, 5);
@@ -158,7 +300,7 @@ mod tests {
         let mut buf = [0u8; 16];
         {
             let mut bio = Bio::encoder(&mut buf);
-            tree.encode(&mut bio, 0, 3); // threshold < value
+            tree.encode(&mut bio, 0, 3);
             bio.flush().unwrap();
         }
 
@@ -166,14 +308,12 @@ mod tests {
         {
             let mut bio = Bio::decoder(&mut buf);
             let below = dec_tree.decode(&mut bio, 0, 3);
-            assert_eq!(below, 0); // value 5 >= threshold 3
+            assert_eq!(below, 0);
         }
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn progressive_encode_decode() {
-        // Test progressive refinement: encode with increasing thresholds
         let mut enc_tree = TagTree::new(2, 2);
         enc_tree.set_value(0, 1);
         enc_tree.set_value(1, 3);
@@ -183,11 +323,9 @@ mod tests {
         let mut buf = [0u8; 64];
         {
             let mut bio = Bio::encoder(&mut buf);
-            // First pass: threshold=1
             for leaf in 0..4 {
                 enc_tree.encode(&mut bio, leaf, 1);
             }
-            // Second pass: threshold=4
             for leaf in 0..4 {
                 enc_tree.encode(&mut bio, leaf, 4);
             }
