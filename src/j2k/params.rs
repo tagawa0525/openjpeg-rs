@@ -362,7 +362,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_mode_values() {
         assert_eq!(T2Mode::ThreshCalc as i32, 0);
         assert_eq!(T2Mode::FinalPass as i32, 1);
@@ -370,7 +369,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn quality_layer_alloc_strategy_values() {
         assert_eq!(QualityLayerAllocStrategy::RateDistortionRatio as i32, 0);
         assert_eq!(QualityLayerAllocStrategy::FixedDistortionRatio as i32, 1);
@@ -382,7 +380,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn stepsize_default() {
         let s = Stepsize::default();
         assert_eq!(s.expn, 0);
@@ -390,7 +387,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tccp_default() {
         let tccp = TileCompCodingParameters::default();
         assert_eq!(tccp.numresolutions, COMP_PARAM_DEFAULT_NUMRESOLUTION);
@@ -403,7 +399,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn poc_default() {
         let poc = Poc::default();
         assert_eq!(poc.resno0, 0);
@@ -413,7 +408,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn tcp_default() {
         let tcp = TileCodingParameters::default();
         assert_eq!(tcp.numlayers, 1);
@@ -424,7 +418,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encoding_param_default() {
         let ep = EncodingParam::default();
         assert_eq!(ep.m_max_comp_size, 0);
@@ -436,7 +429,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decoding_param_default() {
         let dp = DecodingParam::default();
         assert_eq!(dp.m_reduce, 0);
@@ -444,7 +436,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn coding_parameters_encoder() {
         let cp = CodingParameters::new_encoder();
         assert!(!cp.is_decoder());
@@ -454,7 +445,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn coding_parameters_decoder() {
         let cp = CodingParameters::new_decoder();
         assert!(cp.is_decoder());
@@ -463,7 +453,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn coding_param_mode_variants() {
         let enc = CodingParamMode::Encoder(EncodingParam::default());
         assert!(matches!(enc, CodingParamMode::Encoder(_)));
