@@ -51,7 +51,8 @@ pub fn t1_getwmsedec(
         w2
     };
 
-    let wmsedec = w1 * w2 * stepsize * ((1u32 << bpno) as f64);
+    debug_assert!(bpno >= 0, "t1_getwmsedec: bpno must be non-negative");
+    let wmsedec = w1 * w2 * stepsize * ((1u32 << bpno as u32) as f64);
     wmsedec * wmsedec * nmsedec as f64 / 8192.0
 }
 
