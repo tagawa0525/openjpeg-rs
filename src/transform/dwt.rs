@@ -51,9 +51,10 @@ pub fn dwt_getnorm_real(level: u32, orient: u32) -> f64 {
 /// `sn`: number of low-pass samples, `dn`: number of high-pass samples.
 /// `cas`: if true, high-pass starts at index 0 (odd subgrid origin).
 pub fn dwt_encode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
+    debug_assert!(data.len() >= sn + dn);
     if !cas {
         // cas=0: s at even indices, d at odd indices
-        if sn + dn <= 1 {
+        if sn + dn <= 1 || (dn > 0 && sn == 0) {
             return;
         }
         // Predict: d[i] -= (s_[i] + s_[i+1]) >> 1
@@ -65,7 +66,11 @@ pub fn dwt_encode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
         // Update: s[i] += (d_[i-1] + d_[i] + 2) >> 2
         for i in 0..sn {
             let dim1 = data[2 * (if i > 0 { i - 1 } else { 0 }) + 1];
-            let di = data[2 * i.min(dn - 1) + 1];
+            let di = if dn > 0 {
+                data[2 * i.min(dn - 1) + 1]
+            } else {
+                0
+            };
             data[2 * i] += (dim1 + di + 2) >> 2;
         }
     } else {
@@ -109,15 +114,20 @@ pub const DWT_INV_K: f32 = 1.0 / 1.230174105;
 
 /// Inverse 1D 5-3 lifting (in-place on interleaved data).
 pub fn dwt_decode_1_53(data: &mut [i32], sn: usize, dn: usize, cas: bool) {
+    debug_assert!(data.len() >= sn + dn);
     if !cas {
         // cas=0: s at even indices, d at odd indices
-        if sn + dn <= 1 {
+        if sn + dn <= 1 || (dn > 0 && sn == 0) {
             return;
         }
         // Undo update: s[i] -= (d_[i-1] + d_[i] + 2) >> 2
         for i in 0..sn {
             let dim1 = data[2 * (if i > 0 { i - 1 } else { 0 }) + 1];
-            let di = data[2 * i.min(dn - 1) + 1];
+            let di = if dn > 0 {
+                data[2 * i.min(dn - 1) + 1]
+            } else {
+                0
+            };
             data[2 * i] -= (dim1 + di + 2) >> 2;
         }
         // Undo predict: d[i] += (s_[i] + s_[i+1]) >> 1
