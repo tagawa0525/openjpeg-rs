@@ -1,6 +1,6 @@
 # Phase 200: 符号化プリミティブ
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## 概要
 
