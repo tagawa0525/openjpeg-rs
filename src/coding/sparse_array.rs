@@ -1,9 +1,12 @@
 // Phase 200: Sparse array (C: opj_sparse_array_int32_t)
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::types::uint_ceildiv;
 
 /// Block-based sparse i32 array (C: opj_sparse_array_int32_t).
-#[allow(dead_code)]
+///
+/// Divides a logical 2D array into fixed-size blocks. Blocks are allocated
+/// on first write; unwritten blocks read as zero.
 pub struct SparseArray {
     width: u32,
     height: u32,
@@ -14,11 +17,24 @@ pub struct SparseArray {
     data_blocks: Vec<Option<Vec<i32>>>,
 }
 
-#[allow(dead_code)]
 impl SparseArray {
-    pub fn new(_width: u32, _height: u32, _block_width: u32, _block_height: u32) -> Self {
-        todo!()
+    /// Create a new sparse array (C: opj_sparse_array_int32_create).
+    pub fn new(width: u32, height: u32, block_width: u32, block_height: u32) -> Self {
+        debug_assert!(width > 0 && height > 0 && block_width > 0 && block_height > 0);
+        let bch = uint_ceildiv(width, block_width);
+        let bcv = uint_ceildiv(height, block_height);
+        let total = (bch as usize) * (bcv as usize);
+        Self {
+            width,
+            height,
+            block_width,
+            block_height,
+            block_count_hor: bch,
+            block_count_ver: bcv,
+            data_blocks: vec![None; total],
+        }
     }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -31,36 +47,179 @@ impl SparseArray {
     pub fn block_count_ver(&self) -> u32 {
         self.block_count_ver
     }
-    pub fn is_region_valid(&self, _x0: u32, _y0: u32, _x1: u32, _y1: u32) -> bool {
-        todo!()
+
+    /// Check if a region is valid (C: opj_sparse_array_is_region_valid).
+    pub fn is_region_valid(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> bool {
+        !(x0 >= self.width
+            || x1 <= x0
+            || x1 > self.width
+            || y0 >= self.height
+            || y1 <= y0
+            || y1 > self.height)
     }
+
+    /// Read a rectangular region (C: opj_sparse_array_int32_read).
     #[allow(clippy::too_many_arguments)]
     pub fn read_region(
         &self,
-        _x0: u32,
-        _y0: u32,
-        _x1: u32,
-        _y1: u32,
-        _buf: &mut [i32],
-        _col_stride: u32,
-        _line_stride: u32,
-        _forgiving: bool,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        buf: &mut [i32],
+        col_stride: u32,
+        line_stride: u32,
+        forgiving: bool,
     ) -> Result<()> {
-        todo!()
+        self.read_or_write(
+            x0,
+            y0,
+            x1,
+            y1,
+            buf,
+            &[],
+            col_stride,
+            line_stride,
+            forgiving,
+            true,
+        )
     }
+
+    /// Write a rectangular region (C: opj_sparse_array_int32_write).
     #[allow(clippy::too_many_arguments)]
     pub fn write_region(
         &mut self,
-        _x0: u32,
-        _y0: u32,
-        _x1: u32,
-        _y1: u32,
-        _buf: &[i32],
-        _col_stride: u32,
-        _line_stride: u32,
-        _forgiving: bool,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        buf: &[i32],
+        col_stride: u32,
+        line_stride: u32,
+        forgiving: bool,
     ) -> Result<()> {
-        todo!()
+        // We need &mut self for write, but read_or_write needs to handle both.
+        // Use a separate path to avoid borrow conflicts.
+        if !self.is_region_valid(x0, y0, x1, y1) {
+            return if forgiving {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput("region out of bounds".into()))
+            };
+        }
+
+        let bw = self.block_width;
+        let bh = self.block_height;
+
+        let mut block_y = y0 / bh;
+        let mut y = y0;
+        while y < y1 {
+            let y_incr_full = if y == y0 { bh - (y0 % bh) } else { bh };
+            let block_y_offset = bh - y_incr_full;
+            let y_incr = y_incr_full.min(y1 - y);
+
+            let mut block_x = x0 / bw;
+            let mut x = x0;
+            while x < x1 {
+                let x_incr_full = if x == x0 { bw - (x0 % bw) } else { bw };
+                let block_x_offset = bw - x_incr_full;
+                let x_incr = x_incr_full.min(x1 - x);
+
+                let block_idx = (block_y * self.block_count_hor + block_x) as usize;
+                if self.data_blocks[block_idx].is_none() {
+                    self.data_blocks[block_idx] = Some(vec![0i32; (bw as usize) * (bh as usize)]);
+                }
+                let block = self.data_blocks[block_idx].as_mut().unwrap();
+
+                for j in 0..y_incr {
+                    let dest_off =
+                        (block_y_offset + j) as usize * bw as usize + block_x_offset as usize;
+                    let src_off = (y - y0 + j) as usize * line_stride as usize
+                        + (x - x0) as usize * col_stride as usize;
+                    for k in 0..x_incr as usize {
+                        block[dest_off + k] = buf[src_off + k * col_stride as usize];
+                    }
+                }
+
+                x += x_incr;
+                block_x += 1;
+            }
+            y += y_incr;
+            block_y += 1;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_or_write(
+        &self,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        buf: &mut [i32],
+        _src: &[i32],
+        col_stride: u32,
+        line_stride: u32,
+        forgiving: bool,
+        is_read: bool,
+    ) -> Result<()> {
+        if !self.is_region_valid(x0, y0, x1, y1) {
+            return if forgiving {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput("region out of bounds".into()))
+            };
+        }
+
+        debug_assert!(is_read, "write should use write_region directly");
+
+        let bw = self.block_width;
+        let bh = self.block_height;
+
+        let mut block_y = y0 / bh;
+        let mut y = y0;
+        while y < y1 {
+            let y_incr_full = if y == y0 { bh - (y0 % bh) } else { bh };
+            let block_y_offset = bh - y_incr_full;
+            let y_incr = y_incr_full.min(y1 - y);
+
+            let mut block_x = x0 / bw;
+            let mut x = x0;
+            while x < x1 {
+                let x_incr_full = if x == x0 { bw - (x0 % bw) } else { bw };
+                let block_x_offset = bw - x_incr_full;
+                let x_incr = x_incr_full.min(x1 - x);
+
+                let block_idx = (block_y * self.block_count_hor + block_x) as usize;
+                let src_block = &self.data_blocks[block_idx];
+
+                for j in 0..y_incr {
+                    let buf_off = (y - y0 + j) as usize * line_stride as usize
+                        + (x - x0) as usize * col_stride as usize;
+                    match src_block {
+                        None => {
+                            for k in 0..x_incr as usize {
+                                buf[buf_off + k * col_stride as usize] = 0;
+                            }
+                        }
+                        Some(block) => {
+                            let block_off = (block_y_offset + j) as usize * bw as usize
+                                + block_x_offset as usize;
+                            for k in 0..x_incr as usize {
+                                buf[buf_off + k * col_stride as usize] = block[block_off + k];
+                            }
+                        }
+                    }
+                }
+
+                x += x_incr;
+                block_x += 1;
+            }
+            y += y_incr;
+            block_y += 1;
+        }
+        Ok(())
     }
 }
 
@@ -69,7 +228,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_creates_valid_array() {
         let sa = SparseArray::new(100, 200, 32, 32);
         assert_eq!(sa.width(), 100);
@@ -77,7 +235,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_calculates_block_counts() {
         // 100/32 = ceil(3.125) = 4, 200/32 = ceil(6.25) = 7
         let sa = SparseArray::new(100, 200, 32, 32);
@@ -86,7 +243,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn new_exact_block_size() {
         let sa = SparseArray::new(64, 128, 32, 32);
         assert_eq!(sa.block_count_hor(), 2);
@@ -94,7 +250,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_region_valid_accepts_valid() {
         let sa = SparseArray::new(100, 200, 32, 32);
         assert!(sa.is_region_valid(0, 0, 100, 200));
@@ -103,7 +258,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn is_region_valid_rejects_invalid() {
         let sa = SparseArray::new(100, 200, 32, 32);
         // empty region
@@ -118,7 +272,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_unwritten_region_returns_zeros() {
         let sa = SparseArray::new(64, 64, 32, 32);
         let mut buf = vec![42i32; 16];
@@ -127,7 +280,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_then_read_roundtrip() {
         let mut sa = SparseArray::new(64, 64, 32, 32);
         let src: Vec<i32> = (0..16).collect();
@@ -139,7 +291,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_then_read_partial_block() {
         let mut sa = SparseArray::new(64, 64, 32, 32);
         // Write to region that doesn't start at block boundary
@@ -153,7 +304,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_then_read_across_blocks() {
         let mut sa = SparseArray::new(64, 64, 8, 8);
         // 12x12 region crossing multiple 8x8 blocks
@@ -167,7 +317,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_with_col_stride() {
         let mut sa = SparseArray::new(32, 32, 16, 16);
         let src: Vec<i32> = (0..4).collect();
@@ -185,7 +334,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn write_with_col_stride() {
         let mut sa = SparseArray::new(32, 32, 16, 16);
         // Source with col_stride=2
@@ -198,7 +346,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn invalid_region_non_forgiving_returns_error() {
         let sa = SparseArray::new(64, 64, 32, 32);
         let mut buf = vec![0i32; 4];
@@ -207,7 +354,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn invalid_region_forgiving_returns_ok() {
         let sa = SparseArray::new(64, 64, 32, 32);
         let mut buf = vec![0i32; 4];
@@ -216,7 +362,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn single_element_write_read() {
         let mut sa = SparseArray::new(10, 10, 4, 4);
         let src = [42i32];
