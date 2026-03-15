@@ -183,6 +183,12 @@ impl SparseArray {
         }
 
         debug_assert!(is_read, "write should use write_region directly");
+        debug_assert!(
+            buf.len()
+                > (y1 - y0 - 1) as usize * line_stride as usize
+                    + (x1 - x0 - 1) as usize * col_stride as usize,
+            "destination buffer too small for read_region"
+        );
 
         let bw = self.block_width;
         let bh = self.block_height;
