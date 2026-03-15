@@ -384,6 +384,28 @@ pub fn dwt_decode_2d_53(
     Ok(())
 }
 
+/// Forward 2D 9-7 DWT (C: opj_dwt_encode_real).
+pub fn dwt_encode_2d_97(
+    _data: &mut [f32],
+    _w: usize,
+    _h: usize,
+    _stride: usize,
+    _num_res: usize,
+) -> Result<()> {
+    todo!()
+}
+
+/// Inverse 2D 9-7 DWT (C: opj_dwt_decode_real).
+pub fn dwt_decode_2d_97(
+    _data: &mut [f32],
+    _w: usize,
+    _h: usize,
+    _stride: usize,
+    _num_res: usize,
+) -> Result<()> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +675,51 @@ mod tests {
         let mut data = original.clone();
         dwt_encode_2d_53(&mut data, 2, 2, 2, 1).unwrap();
         assert_eq!(data, original);
+    }
+
+    // ==================== 2D 9-7 tests ====================
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_97_4x4_roundtrip() {
+        #[rustfmt::skip]
+        let original: Vec<f32> = vec![
+            10.0, 23.0, 35.0, 41.0,
+            58.0, 62.0, 77.0, 80.0,
+            15.0, 28.0, 42.0, 53.0,
+            67.0, 71.0, 88.0, 95.0,
+        ];
+        let mut data = original.clone();
+        dwt_encode_2d_97(&mut data, 4, 4, 4, 2).unwrap();
+        dwt_decode_2d_97(&mut data, 4, 4, 4, 2).unwrap();
+        assert_f32_eq(&data, &original, 1e-3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_97_8x8_multi_level_roundtrip() {
+        let mut original = vec![0.0f32; 64];
+        for (i, v) in original.iter_mut().enumerate() {
+            *v = (i as f32 * 7.3 + 13.1) % 256.0;
+        }
+        let mut data = original.clone();
+        dwt_encode_2d_97(&mut data, 8, 8, 8, 3).unwrap();
+        dwt_decode_2d_97(&mut data, 8, 8, 8, 3).unwrap();
+        assert_f32_eq(&data, &original, 1e-3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_2d_97_odd_size_roundtrip() {
+        #[rustfmt::skip]
+        let original: Vec<f32> = vec![
+            10.0, 20.0, 30.0, 40.0, 50.0,
+            60.0, 70.0, 80.0, 90.0, 100.0,
+            110.0, 120.0, 130.0, 140.0, 150.0,
+        ];
+        let mut data = original.clone();
+        dwt_encode_2d_97(&mut data, 5, 3, 5, 2).unwrap();
+        dwt_decode_2d_97(&mut data, 5, 3, 5, 2).unwrap();
+        assert_f32_eq(&data, &original, 1e-3);
     }
 }
