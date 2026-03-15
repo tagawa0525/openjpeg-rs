@@ -1693,7 +1693,6 @@ mod tests {
     // --- Clean-up pass tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn clnpass_encode_decode_roundtrip() {
         use crate::coding::mqc::Mqc;
 
