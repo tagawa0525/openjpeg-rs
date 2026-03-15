@@ -507,7 +507,9 @@ impl<'a> Mqc<'a> {
 
     /// BYPASS mode flush (C: opj_mqc_bypass_flush_enc).
     pub fn bypass_flush_enc(&mut self, erterm: bool) {
-        if self.ct < 7 || (self.ct == 7 && (erterm || self.buf[self.bp - 1] != 0xff)) {
+        if self.ct < 7
+            || (self.ct == 7 && (erterm || (self.bp > 0 && self.buf[self.bp - 1] != 0xff)))
+        {
             let mut bit_value = 0u32;
             while self.ct > 0 {
                 self.ct -= 1;
@@ -516,7 +518,7 @@ impl<'a> Mqc<'a> {
             }
             self.buf[self.bp] = self.c as u8;
             self.bp += 1;
-        } else if self.ct == 7 && self.buf[self.bp - 1] == 0xff {
+        } else if self.ct == 7 && self.bp > 0 && self.buf[self.bp - 1] == 0xff {
             debug_assert!(!erterm);
             self.bp -= 1;
         } else if self.ct == 8
