@@ -406,12 +406,18 @@ impl<'a> Mqc<'a> {
 
     /// Set the state of a specific context (C: opj_mqc_setstate).
     pub fn set_state(&mut self, ctxno: usize, msb: u32, prob: i32) {
+        debug_assert!(ctxno < MQC_NUMCTXS, "ctxno {ctxno} out of range");
+        debug_assert!(
+            (prob as usize) < MQC_STATES.len(),
+            "prob {prob} out of range"
+        );
         self.ctxs[ctxno] = prob as usize;
         self.ctxs_mps[ctxno] = msb as u8;
     }
 
     /// Set current active context (C: opj_mqc_setcurctx).
     pub fn set_curctx(&mut self, ctxno: usize) {
+        debug_assert!(ctxno < MQC_NUMCTXS, "ctxno {ctxno} out of range");
         self.curctx = ctxno;
     }
 
