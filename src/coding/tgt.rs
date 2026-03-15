@@ -1,5 +1,6 @@
 // Phase 200: Tag tree (C: opj_tgt_tree_t)
 
+use crate::error::Result;
 use crate::io::bio::Bio;
 
 /// Tag tree node.
@@ -25,6 +26,10 @@ pub struct TagTree {
 impl TagTree {
     /// Create a new tag tree (C: opj_tgt_create).
     pub fn new(numleafsh: u32, numleafsv: u32) -> Self {
+        debug_assert!(
+            numleafsh > 0 && numleafsv > 0,
+            "tag tree dimensions must be non-zero"
+        );
         // Calculate total nodes across all levels
         let mut nplh = vec![numleafsh as i32];
         let mut nplv = vec![numleafsv as i32];
