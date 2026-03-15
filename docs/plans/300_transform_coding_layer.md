@@ -148,17 +148,17 @@ LU分解による行列逆行列。カスタムMCTのパラメータ逆変換に
 
 多成分変換（MCT）。画像の色成分間の相関を除去する。
 
-| C版関数                 | Rust                                                                              | 備考              |
-| ----------------------- | --------------------------------------------------------------------------------- | ----------------- |
-| `opj_mct_encode`        | `pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32])`               | 可逆 RCT          |
-| `opj_mct_decode`        | `pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32])`               | 可逆 RCT逆変換    |
-| `opj_mct_encode_real`   | `pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32])`          | 非可逆 ICT        |
-| `opj_mct_decode_real`   | `pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32])`          | 非可逆 ICT逆変換  |
-| `opj_mct_getnorm`       | `pub fn mct_getnorm(compno: u32) -> f64`                                          | RCT正規化係数     |
-| `opj_mct_getnorm_real`  | `pub fn mct_getnorm_real(compno: u32) -> f64`                                     | ICT正規化係数     |
-| `opj_mct_encode_custom` | `pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]]) -> Result<()>` | カスタムMCT       |
-| `opj_mct_decode_custom` | `pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]]) -> Result<()>` | カスタムMCT逆変換 |
-| `opj_calculate_norms`   | `pub fn calculate_norms(norms: &mut [f64], matrix: &[f32], nb_comps: usize)`      | 列L2ノルム        |
+| C版関数                 | Rust                                                                              | 備考                             |
+| ----------------------- | --------------------------------------------------------------------------------- | -------------------------------- |
+| `opj_mct_encode`        | `pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32])`               | 可逆 RCT                         |
+| `opj_mct_decode`        | `pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32])`               | 可逆 RCT逆変換                   |
+| `opj_mct_encode_real`   | `pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32])`          | 非可逆 ICT                       |
+| `opj_mct_decode_real`   | `pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32])`          | 非可逆 ICT逆変換                 |
+| `opj_mct_getnorm`       | `pub fn mct_getnorm(compno: u32) -> f64`                                          | RCT正規化係数                    |
+| `opj_mct_getnorm_real`  | `pub fn mct_getnorm_real(compno: u32) -> f64`                                     | ICT正規化係数                    |
+| `opj_mct_encode_custom` | `pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]]) -> Result<()>` | カスタムMCT（可逆: i32）         |
+| `opj_mct_decode_custom` | `pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]]) -> Result<()>` | カスタムMCT逆変換（非可逆: f32） |
+| `opj_calculate_norms`   | `pub fn calculate_norms(norms: &mut [f64], matrix: &[f32], nb_comps: usize)`      | 列L2ノルム                       |
 
 #### RCT計算式（可逆）
 
