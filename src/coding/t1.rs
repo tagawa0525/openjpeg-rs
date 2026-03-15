@@ -110,6 +110,41 @@ impl T1 {
     pub fn set_orient(&mut self, orient: u32) {
         self.lut_ctxno_zc_orient_offset = (orient as usize) << 9;
     }
+
+    // --- Encoding passes ---
+
+    /// Significance pass encoder (C: opj_t1_enc_sigpass).
+    pub fn enc_sigpass(
+        &mut self,
+        _mqc: &mut crate::coding::mqc::Mqc,
+        _bpno: i32,
+        _pass_type: u8,
+        _cblksty: u32,
+    ) -> i32 {
+        todo!()
+    }
+
+    // --- Decoding passes ---
+
+    /// Significance pass decoder, MQ mode (C: opj_t1_dec_sigpass_mqc).
+    pub fn dec_sigpass_mqc(
+        &mut self,
+        _mqc: &mut crate::coding::mqc::Mqc,
+        _bpno_plus_one: i32,
+        _cblksty: u32,
+    ) {
+        todo!()
+    }
+
+    /// Significance pass decoder, RAW mode (C: opj_t1_dec_sigpass_raw).
+    pub fn dec_sigpass_raw(
+        &mut self,
+        _mqc: &mut crate::coding::mqc::Mqc,
+        _bpno_plus_one: i32,
+        _cblksty: u32,
+    ) {
+        todo!()
+    }
 }
 
 // --- Context helper functions ---
@@ -616,5 +651,82 @@ mod tests {
         assert_eq!(flags[north] & T1_SIGMA_16, 0);
         // South should be unchanged
         assert_eq!(flags[south] & T1_SIGMA_1, 0);
+    }
+
+    // --- Significance pass tests ---
+
+    /// Helper: initialize MQC contexts for T1 encoding/decoding.
+    fn init_t1_mqc_contexts(mqc: &mut crate::coding::mqc::Mqc) {
+        mqc.reset_states();
+        mqc.set_state(T1_CTXNO_UNI, 0, 46);
+        mqc.set_state(T1_CTXNO_AGG, 0, 3);
+        mqc.set_state(T1_CTXNO_ZC, 0, 4);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn sigpass_encode_decode_roundtrip() {
+        use crate::coding::mqc::Mqc;
+
+        // Setup: 4x4 block. Coefficient at (col=0, row=0) is already significant
+        // (simulating a prior clean-up pass). Its east neighbor (col=1, row=0)
+        // has a non-zero bit at the test bitplane and should be coded by sigpass.
+        let bpno: i32 = 3;
+        let one = 1i32 << (bpno + T1_NMSEDEC_FRACBITS as i32);
+
+        // --- Encode ---
+        let mut enc = T1::new(true);
+        enc.allocate_buffers(4, 4).unwrap();
+        enc.set_orient(0);
+
+        // Mark (col=0, row=0) as already significant in flags
+        let fp00 = enc.flags_index(0, 0);
+        let stride = enc.flags_stride();
+        update_flags(&mut enc.flags, fp00, 0, 0, stride, false);
+
+        // Encoder data is zigzag: col 0 = data[0..4], col 1 = data[4..8]
+        // Set (col=1, row=0) = data[4] to positive value with bit at bpno set
+        enc.data[4] = one; // positive, SMR same as two's complement
+
+        let mut enc_buf = vec![0u8; 256];
+        {
+            let mut mqc = Mqc::new(&mut enc_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_enc();
+            let nmsedec = enc.enc_sigpass(&mut mqc, bpno, T1_TYPE_MQ, 0);
+            mqc.flush();
+            assert!(nmsedec >= 0);
+            assert!(mqc.num_bytes() > 0);
+        }
+
+        // --- Decode ---
+        let num_bytes;
+        {
+            let mqc = Mqc::new(&mut enc_buf);
+            num_bytes = mqc.num_bytes();
+        }
+        // Extract encoded data (encoder writes starting at buf[1])
+        let mut dec_buf = vec![0u8; 256];
+        dec_buf[..num_bytes].copy_from_slice(&enc_buf[1..1 + num_bytes]);
+
+        let mut dec = T1::new(false);
+        dec.allocate_buffers(4, 4).unwrap();
+        dec.set_orient(0);
+        // Same prior flag state
+        let fp00 = dec.flags_index(0, 0);
+        let stride = dec.flags_stride();
+        update_flags(&mut dec.flags, fp00, 0, 0, stride, false);
+
+        {
+            let mut mqc = Mqc::new(&mut dec_buf);
+            init_t1_mqc_contexts(&mut mqc);
+            mqc.init_dec(num_bytes);
+            dec.dec_sigpass_mqc(&mut mqc, bpno + 1, 0);
+            mqc.finish_dec();
+        }
+
+        // Verify: (col=1, row=0) in row-major = data[0*4 + 1] = data[1]
+        let oneplushalf = (1i32 << bpno) | (1i32 << (bpno - 1));
+        assert_eq!(dec.data[1], oneplushalf);
     }
 }
