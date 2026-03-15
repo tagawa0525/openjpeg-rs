@@ -277,24 +277,111 @@ pub fn interleave_v<T: Copy>(
 /// Processes from finest to coarsest: each level applies vertical then horizontal
 /// transform on the current LL subband, producing LL/LH/HL/HH subbands.
 pub fn dwt_encode_2d_53(
-    _data: &mut [i32],
-    _w: usize,
-    _h: usize,
-    _stride: usize,
-    _num_res: usize,
+    data: &mut [i32],
+    w: usize,
+    h: usize,
+    stride: usize,
+    num_res: usize,
 ) -> Result<()> {
-    todo!()
+    if num_res <= 1 || w == 0 || h == 0 {
+        return Ok(());
+    }
+    // Resolution dimensions: level i has size ceil(w / 2^i), ceil(h / 2^i)
+    // Process from finest to coarsest (level 0 = finest = num_res-1 decompositions)
+    let mut tmp = vec![0i32; w.max(h)];
+    for level in (0..num_res - 1).rev() {
+        let rw = ((w - 1) >> level) + 1; // width at this resolution
+        let rh = ((h - 1) >> level) + 1;
+        let rw1 = ((w - 1) >> (level + 1)) + 1; // width at next coarser
+        let rh1 = ((h - 1) >> (level + 1)) + 1;
+        let cas_col = 0usize; // y0 & 1, always 0 for our simplified API
+        let cas_row = 0usize; // x0 & 1
+        let sn_v = rh1;
+        let dn_v = rh - rh1;
+
+        // Vertical pass: for each column j, encode+deinterleave vertically
+        for j in 0..rw {
+            // Gather column j into tmp (interleaved)
+            for i in 0..rh {
+                tmp[i] = data[i * stride + j];
+            }
+            dwt_encode_1_53(&mut tmp[..rh], sn_v, dn_v, cas_col != 0);
+            // Deinterleave: separate into low/high in column
+            let mut separated = vec![0i32; rh];
+            deinterleave_h(&tmp[..rh], &mut separated, sn_v, dn_v, cas_col != 0);
+            // Write back: low-pass rows first, then high-pass rows
+            for i in 0..rh {
+                data[i * stride + j] = separated[i];
+            }
+        }
+
+        let sn_h = rw1;
+        let dn_h = rw - rw1;
+
+        // Horizontal pass: for each row i, encode+deinterleave horizontally
+        for i in 0..rh {
+            let row_start = i * stride;
+            tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
+            dwt_encode_1_53(&mut tmp[..rw], sn_h, dn_h, cas_row != 0);
+            let mut separated = vec![0i32; rw];
+            deinterleave_h(&tmp[..rw], &mut separated, sn_h, dn_h, cas_row != 0);
+            data[row_start..row_start + rw].copy_from_slice(&separated);
+        }
+    }
+    Ok(())
 }
 
 /// Inverse 2D 5-3 DWT (C: opj_dwt_decode).
 pub fn dwt_decode_2d_53(
-    _data: &mut [i32],
-    _w: usize,
-    _h: usize,
-    _stride: usize,
-    _num_res: usize,
+    data: &mut [i32],
+    w: usize,
+    h: usize,
+    stride: usize,
+    num_res: usize,
 ) -> Result<()> {
-    todo!()
+    if num_res <= 1 || w == 0 || h == 0 {
+        return Ok(());
+    }
+    let mut tmp = vec![0i32; w.max(h)];
+    // Process from coarsest to finest (reverse of encode)
+    for level in 0..num_res - 1 {
+        let rw = ((w - 1) >> level) + 1;
+        let rh = ((h - 1) >> level) + 1;
+        let rw1 = ((w - 1) >> (level + 1)) + 1;
+        let rh1 = ((h - 1) >> (level + 1)) + 1;
+        let cas_col = 0usize;
+        let cas_row = 0usize;
+        let sn_h = rw1;
+        let dn_h = rw - rw1;
+
+        // Horizontal pass: interleave then decode for each row
+        for i in 0..rh {
+            let row_start = i * stride;
+            // Interleave: separated → interleaved
+            let separated = &data[row_start..row_start + rw];
+            interleave_h(separated, &mut tmp[..rw], sn_h, dn_h, cas_row != 0);
+            dwt_decode_1_53(&mut tmp[..rw], sn_h, dn_h, cas_row != 0);
+            data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+        }
+
+        let sn_v = rh1;
+        let dn_v = rh - rh1;
+
+        // Vertical pass: interleave then decode for each column
+        for j in 0..rw {
+            // Gather separated column
+            let mut separated = vec![0i32; rh];
+            for i in 0..rh {
+                separated[i] = data[i * stride + j];
+            }
+            interleave_h(&separated, &mut tmp[..rh], sn_v, dn_v, cas_col != 0);
+            dwt_decode_1_53(&mut tmp[..rh], sn_v, dn_v, cas_col != 0);
+            for i in 0..rh {
+                data[i * stride + j] = tmp[i];
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -514,7 +601,6 @@ mod tests {
     // ==================== 2D 5-3 tests ====================
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_53_4x4_roundtrip() {
         // 4×4 non-linear data, 2 resolution levels (1 decomposition)
         #[rustfmt::skip]
@@ -532,7 +618,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_53_8x8_multi_level_roundtrip() {
         // 8×8 data, 3 resolution levels (2 decompositions)
         let mut original = vec![0i32; 64];
@@ -547,7 +632,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_53_odd_size_roundtrip() {
         // 5×3 data, 2 resolution levels
         #[rustfmt::skip]
@@ -563,7 +647,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_2d_53_single_res_noop() {
         // num_res=1 means no decomposition, should be a no-op
         let original = vec![10, 20, 30, 40];
