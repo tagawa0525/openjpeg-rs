@@ -190,8 +190,10 @@ pub const T1_TYPE_MQ: u8 = 0;
 /// Raw (bypass) coding mode (C: T1_TYPE_RAW).
 pub const T1_TYPE_RAW: u8 = 1;
 
-// T1 flag bit positions — 32-bit word packs 4 rows of state.
-// SIGMA: significance (bits 0–17, 3 cols × 6 rows)
+// T1 flag bit positions — 32-bit word packs state for 4 data points in a column.
+// SIGMA bits (0–17): significance for a 3-wide × 6-high neighbourhood window
+//   (4 data points + 1 above + 1 below neighbours, each with W/THIS/E columns).
+// Shift the word right by 3 bits to advance from one data point to the next.
 pub const T1_SIGMA_0: u32 = 1 << 0;
 pub const T1_SIGMA_1: u32 = 1 << 1;
 pub const T1_SIGMA_2: u32 = 1 << 2;
