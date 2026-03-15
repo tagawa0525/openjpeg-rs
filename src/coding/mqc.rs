@@ -534,11 +534,9 @@ impl<'a> Mqc<'a> {
     /// RESET mode (C: opj_mqc_reset_enc).
     pub fn reset_enc(&mut self) {
         self.reset_states();
-        self.set_state(17, 0, 46); // T1_CTXNO_UNI
-        self.set_state(0, 0, 3); // T1_CTXNO_AGG -> ctxno 0 in reset, prob 3
-        // Note: C version uses T1_CTXNO_ZC=0 with prob=4, but reset_enc
-        // calls setstate for specific T1 context numbers.
-        // We'll replicate the C behavior exactly.
+        self.set_state(18, 0, 46); // T1_CTXNO_UNI
+        self.set_state(17, 0, 3); // T1_CTXNO_AGG
+        self.set_state(0, 0, 4); // T1_CTXNO_ZC
     }
 
     /// RESTART mode reinit (C: opj_mqc_restart_init_enc).
