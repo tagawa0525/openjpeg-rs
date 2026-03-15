@@ -275,6 +275,32 @@ pub const J2K_CCP_CBLKSTY_VSC: u32 = 0x08;
 pub const J2K_CCP_CBLKSTY_PTERM: u32 = 0x10;
 pub const J2K_CCP_CBLKSTY_SEGSYM: u32 = 0x20;
 
+// --- J2K coding parameter constants ---
+
+/// Maximum number of POC entries (C: J2K_MAX_POCS).
+pub const J2K_MAX_POCS: usize = 32;
+
+/// Coding style: precinct size defined (C: J2K_CP_CSTY_PRT).
+pub const J2K_CP_CSTY_PRT: u32 = 0x01;
+/// Coding style: SOP marker present (C: J2K_CP_CSTY_SOP).
+pub const J2K_CP_CSTY_SOP: u32 = 0x02;
+/// Coding style: EPH marker present (C: J2K_CP_CSTY_EPH).
+pub const J2K_CP_CSTY_EPH: u32 = 0x04;
+/// Component coding style: precinct size defined (C: J2K_CCP_CSTY_PRT).
+pub const J2K_CCP_CSTY_PRT: u32 = 0x01;
+
+/// Quantization: no quantization (C: J2K_CCP_QNTSTY_NOQNT).
+pub const J2K_CCP_QNTSTY_NOQNT: u32 = 0;
+/// Quantization: scalar implicit (C: J2K_CCP_QNTSTY_SIQNT).
+pub const J2K_CCP_QNTSTY_SIQNT: u32 = 1;
+/// Quantization: scalar explicit (C: J2K_CCP_QNTSTY_SEQNT).
+pub const J2K_CCP_QNTSTY_SEQNT: u32 = 2;
+
+/// Codeblock style: HT (high throughput) (C: J2K_CCP_CBLKSTY_HT).
+pub const J2K_CCP_CBLKSTY_HT: u32 = 0x40;
+/// Codeblock style: HT mixed mode (C: J2K_CCP_CBLKSTY_HTMIXED).
+pub const J2K_CCP_CBLKSTY_HTMIXED: u32 = 0x80;
+
 /// Fixed-point multiplication for T1 NMSEDEC (C: opj_int_fix_mul_t1).
 /// Uses round-to-nearest instead of biased rounding.
 #[inline]
