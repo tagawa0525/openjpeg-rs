@@ -1,6 +1,6 @@
 // Multi-component transform (C: mct.c)
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::types::int_fix_mul;
 
 /// RCT normalization coefficients (C: opj_mct_norms).
@@ -12,6 +12,8 @@ pub static MCT_NORMS_REAL: [f64; 3] = [1.732, 1.805, 1.573];
 /// Forward reversible MCT (RCT) (C: opj_mct_encode).
 /// Y = (R + 2G + B) >> 2, Cb = B - G, Cr = R - G
 pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    debug_assert_eq!(c0.len(), c1.len());
+    debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let r = c0[i];
@@ -26,6 +28,8 @@ pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
 /// Inverse reversible MCT (RCT) (C: opj_mct_decode).
 /// G = Y - (Cb + Cr) >> 2, R = Cr + G, B = Cb + G
 pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    debug_assert_eq!(c0.len(), c1.len());
+    debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let y = c0[i];
@@ -40,6 +44,8 @@ pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
 
 /// Forward irreversible MCT (ICT) (C: opj_mct_encode_real).
 pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    debug_assert_eq!(c0.len(), c1.len());
+    debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let r = c0[i];
@@ -53,6 +59,8 @@ pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
 
 /// Inverse irreversible MCT (ICT) (C: opj_mct_decode_real).
 pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    debug_assert_eq!(c0.len(), c1.len());
+    debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let y = c0[i];
@@ -66,11 +74,13 @@ pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
 
 /// Get RCT normalization coefficient (C: opj_mct_getnorm).
 pub fn mct_getnorm(compno: u32) -> f64 {
+    debug_assert!((compno as usize) < MCT_NORMS.len());
     MCT_NORMS[compno as usize]
 }
 
 /// Get ICT normalization coefficient (C: opj_mct_getnorm_real).
 pub fn mct_getnorm_real(compno: u32) -> f64 {
+    debug_assert!((compno as usize) < MCT_NORMS_REAL.len());
     MCT_NORMS_REAL[compno as usize]
 }
 
@@ -79,6 +89,14 @@ pub fn mct_getnorm_real(compno: u32) -> f64 {
 #[allow(clippy::needless_range_loop)]
 pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]], n: usize) -> Result<()> {
     let nb_comps = data.len();
+    if matrix.len() < nb_comps * nb_comps {
+        return Err(Error::InvalidInput("matrix too small".into()));
+    }
+    for comp in data.iter() {
+        if comp.len() < n {
+            return Err(Error::InvalidInput("component slice too short".into()));
+        }
+    }
     let multiplier = 1 << 13;
     let int_matrix: Vec<i32> = matrix
         .iter()
@@ -106,6 +124,14 @@ pub fn mct_encode_custom(matrix: &[f32], data: &mut [&mut [i32]], n: usize) -> R
 #[allow(clippy::needless_range_loop)]
 pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> Result<()> {
     let nb_comps = data.len();
+    if matrix.len() < nb_comps * nb_comps {
+        return Err(Error::InvalidInput("matrix too small".into()));
+    }
+    for comp in data.iter() {
+        if comp.len() < n {
+            return Err(Error::InvalidInput("component slice too short".into()));
+        }
+    }
     let mut current = vec![0.0f32; nb_comps];
 
     for i in 0..n {
@@ -125,6 +151,8 @@ pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> R
 
 /// Calculate column L2 norms of a matrix (C: opj_calculate_norms).
 pub fn calculate_norms(norms: &mut [f64], matrix: &[f32], nb_comps: usize) {
+    debug_assert!(norms.len() >= nb_comps);
+    debug_assert!(matrix.len() >= nb_comps * nb_comps);
     for i in 0..nb_comps {
         let mut sum = 0.0f64;
         for j in 0..nb_comps {
