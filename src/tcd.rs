@@ -420,24 +420,25 @@ impl Tcd {
                         band.y0 = int_ceildivpow2(comp.y0, levelno);
                         band.x1 = int_ceildivpow2(comp.x1, levelno);
                         band.y1 = int_ceildivpow2(comp.y1, levelno);
+                    } else if levelno == 0 {
+                        // Highest resolution: band boundaries = resolution boundaries
+                        band.x0 = res.x0;
+                        band.y0 = res.y0;
+                        band.x1 = res.x1;
+                        band.y1 = res.y1;
                     } else {
-                        // HL, LH, HH bands
-                        band.x0 = int_ceildivpow2(
-                            comp.x0 - (1 << (levelno - 1)) * ((band.bandno & 1) as i32),
-                            levelno,
-                        );
-                        band.y0 = int_ceildivpow2(
-                            comp.y0 - (1 << (levelno - 1)) * ((band.bandno >> 1) as i32),
-                            levelno,
-                        );
-                        band.x1 = int_ceildivpow2(
-                            comp.x1 - (1 << (levelno - 1)) * ((band.bandno & 1) as i32),
-                            levelno,
-                        );
-                        band.y1 = int_ceildivpow2(
-                            comp.y1 - (1 << (levelno - 1)) * ((band.bandno >> 1) as i32),
-                            levelno,
-                        );
+                        // HL, LH, HH bands at lower resolution levels
+                        let half_level = 1i64 << (levelno - 1);
+                        let x0b = (band.bandno & 1) as i64;
+                        let y0b = (band.bandno >> 1) as i64;
+                        band.x0 = ((comp.x0 as i64 - half_level * x0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.y0 = ((comp.y0 as i64 - half_level * y0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.x1 = ((comp.x1 as i64 - half_level * x0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.y1 = ((comp.y1 as i64 - half_level * y0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
                     }
 
                     // Quantization stepsize
@@ -851,7 +852,9 @@ mod tests {
             prec: 8,
             sgnd: false,
         }];
-        let image = Image::new(&params, ColorSpace::Gray);
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 64;
+        image.y1 = 64;
 
         let tccp = TileCompCodingParameters {
             numresolutions: 2,
@@ -886,7 +889,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_tile_basic_hierarchy() {
         let (image, cp, tcp) = create_test_setup(true);
         let mut tcd = Tcd::new(false);
@@ -922,7 +924,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_tile_codeblocks_created() {
         let (image, cp, tcp) = create_test_setup(true);
         let mut tcd = Tcd::new(false);
@@ -941,7 +942,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_tile_decoder_codeblocks() {
         let (image, cp, tcp) = create_test_setup(false);
         let mut tcd = Tcd::new(true);
@@ -954,7 +954,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn dc_level_shift_roundtrip() {
         let (image, cp, tcp) = create_test_setup(true);
         let mut tcd = Tcd::new(false);
@@ -975,7 +974,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn dc_level_shift_zero_is_noop() {
         let (image, cp, _) = create_test_setup(true);
         let tcp_no_shift = TileCodingParameters {
