@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::image::Image;
 use crate::j2k::params::{CodingParameters, TileCodingParameters};
 use crate::types::{
-    J2K_MAXLAYERS, int_ceildivpow2, int_floordivpow2, uint_ceildiv, uint_ceildivpow2,
+    J2K_MAXLAYERS, int_ceildiv, int_ceildivpow2, int_floordivpow2, uint_ceildiv, uint_ceildivpow2,
 };
 
 // ---------------------------------------------------------------------------
@@ -320,6 +320,13 @@ impl Tcd {
         tcp: &TileCodingParameters,
         is_encoder: bool,
     ) -> Result<()> {
+        if cp.tw == 0 || cp.th == 0 || tileno >= cp.tw * cp.th {
+            return Err(Error::InvalidInput(format!(
+                "tileno {tileno} out of range (tw={}, th={})",
+                cp.tw, cp.th
+            )));
+        }
+
         let p = tileno % cp.tw;
         let q = tileno / cp.tw;
 
@@ -328,6 +335,12 @@ impl Tcd {
         let ty0 = (cp.ty0 + q * cp.tdy).max(image.y0);
         let tx1 = (cp.tx0 + (p + 1) * cp.tdx).min(image.x1);
         let ty1 = (cp.ty0 + (q + 1) * cp.tdy).min(image.y1);
+
+        if tx1 <= tx0 || ty1 <= ty0 {
+            return Err(Error::InvalidInput(format!(
+                "tile {tileno} has zero or negative area: ({tx0},{ty0})-({tx1},{ty1})"
+            )));
+        }
 
         self.tile.x0 = tx0 as i32;
         self.tile.y0 = ty0 as i32;
@@ -352,10 +365,15 @@ impl Tcd {
             comp.compno = compno as u32;
 
             // Component-level tile boundaries (scaled by subsampling)
-            comp.x0 = int_ceildivpow2(tx0 as i32, img_comp.dx.trailing_zeros() as i32);
-            comp.y0 = int_ceildivpow2(ty0 as i32, img_comp.dy.trailing_zeros() as i32);
-            comp.x1 = int_ceildivpow2(tx1 as i32, img_comp.dx.trailing_zeros() as i32);
-            comp.y1 = int_ceildivpow2(ty1 as i32, img_comp.dy.trailing_zeros() as i32);
+            if img_comp.dx == 0 || img_comp.dy == 0 {
+                return Err(Error::InvalidInput(format!(
+                    "component {compno} has zero subsampling factor"
+                )));
+            }
+            comp.x0 = int_ceildiv(tx0 as i32, img_comp.dx as i32);
+            comp.y0 = int_ceildiv(ty0 as i32, img_comp.dy as i32);
+            comp.x1 = int_ceildiv(tx1 as i32, img_comp.dx as i32);
+            comp.y1 = int_ceildiv(ty1 as i32, img_comp.dy as i32);
 
             let numresolutions = tccp.numresolutions as usize;
             comp.numresolutions = tccp.numresolutions;
@@ -470,17 +488,20 @@ impl Tcd {
 
                     for precno in 0..num_precincts {
                         let prc = &mut band.precincts[precno];
+                        // Reset precinct to clean state
+                        *prc = TcdPrecinct::default();
+
                         let pi = precno as u32 % res.pw;
                         let pj = precno as u32 / res.pw;
 
-                        // Precinct boundaries within band
-                        prc.x0 = (pi << pdx).max(band.x0 as u32) as i32;
-                        prc.y0 = (pj << pdy).max(band.y0 as u32) as i32;
-                        prc.x1 = ((pi + 1) << pdx).min(band.x1 as u32) as i32;
-                        prc.y1 = ((pj + 1) << pdy).min(band.y1 as u32) as i32;
+                        // Precinct boundaries with grid origin offset
+                        prc.x0 = ((tprc_x0 + pi) << pdx).max(band.x0 as u32) as i32;
+                        prc.y0 = ((tprc_y0 + pj) << pdy).max(band.y0 as u32) as i32;
+                        prc.x1 = ((tprc_x0 + pi + 1) << pdx).min(band.x1 as u32) as i32;
+                        prc.y1 = ((tprc_y0 + pj + 1) << pdy).min(band.y1 as u32) as i32;
 
-                        let prc_w = (prc.x1 - prc.x0) as u32;
-                        let prc_h = (prc.y1 - prc.y0) as u32;
+                        let prc_w = (prc.x1 - prc.x0).max(0) as u32;
+                        let prc_h = (prc.y1 - prc.y0).max(0) as u32;
                         prc.cw = uint_ceildiv(prc_w, cblkw);
                         prc.ch = uint_ceildiv(prc_h, cblkh);
 
@@ -492,7 +513,9 @@ impl Tcd {
                             prc.imsbtree = Some(TagTree::new(prc.cw, prc.ch));
                         }
 
-                        // Create code blocks
+                        // Create code blocks (clamp to both precinct and band bounds)
+                        let x1_max = prc.x1.min(band.x1);
+                        let y1_max = prc.y1.min(band.y1);
                         if is_encoder {
                             let mut cblks = vec![TcdCblkEnc::default(); num_cblks];
                             for (cblkno, cblk) in cblks.iter_mut().enumerate() {
@@ -500,8 +523,8 @@ impl Tcd {
                                 let cj = cblkno as u32 / prc.cw;
                                 cblk.x0 = (prc.x0 as u32 + ci * cblkw) as i32;
                                 cblk.y0 = (prc.y0 as u32 + cj * cblkh) as i32;
-                                cblk.x1 = (cblk.x0 + cblkw as i32).min(band.x1);
-                                cblk.y1 = (cblk.y0 + cblkh as i32).min(band.y1);
+                                cblk.x1 = (cblk.x0 + cblkw as i32).min(x1_max);
+                                cblk.y1 = (cblk.y0 + cblkh as i32).min(y1_max);
                             }
                             prc.cblks = TcdCodeBlocks::Enc(cblks);
                         } else {
@@ -511,8 +534,8 @@ impl Tcd {
                                 let cj = cblkno as u32 / prc.cw;
                                 cblk.x0 = (prc.x0 as u32 + ci * cblkw) as i32;
                                 cblk.y0 = (prc.y0 as u32 + cj * cblkh) as i32;
-                                cblk.x1 = (cblk.x0 + cblkw as i32).min(band.x1);
-                                cblk.y1 = (cblk.y0 + cblkh as i32).min(band.y1);
+                                cblk.x1 = (cblk.x0 + cblkw as i32).min(x1_max);
+                                cblk.y1 = (cblk.y0 + cblkh as i32).min(y1_max);
                             }
                             prc.cblks = TcdCodeBlocks::Dec(cblks);
                         }
