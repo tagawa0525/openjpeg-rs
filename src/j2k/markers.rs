@@ -401,7 +401,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn siz_basic_parsing() {
         let data = make_siz_data();
         let mut image = Image::new_tile(&[], crate::types::ColorSpace::Unknown);
@@ -427,7 +426,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn siz_rejects_too_short() {
         let data = vec![0u8; 10];
         let mut image = Image::new_tile(&[], crate::types::ColorSpace::Unknown);
@@ -453,7 +451,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn cod_basic_parsing() {
         let data = make_cod_data();
         let mut tcp = TileCodingParameters::default();
@@ -475,7 +472,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn cod_with_precincts() {
         let mut data = Vec::new();
         data.push(0x01); // Scod: PRT (precincts defined)
@@ -507,7 +503,6 @@ mod tests {
     // --- QCD ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn qcd_noqnt() {
         // NOQNT: 1 byte per subband
         let data = vec![
@@ -530,7 +525,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn qcd_seqnt() {
         // SEQNT: 2 bytes per subband
         let mut data = Vec::new();
@@ -553,7 +547,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn qcd_siqnt() {
         // SIQNT: single 2-byte entry, rest derived
         let mut data = Vec::new();
@@ -575,7 +568,6 @@ mod tests {
     // --- COM ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn com_parsing() {
         let mut data = Vec::new();
         data.extend_from_slice(&1u16.to_be_bytes()); // Rcom=1 (Latin text)
