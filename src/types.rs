@@ -100,8 +100,8 @@ pub fn uint64_ceildiv_as_u32(a: u64, b: u64) -> u32 {
 #[inline]
 pub fn int_ceildivpow2(a: i32, b: i32) -> i32 {
     debug_assert!(
-        (0..31).contains(&b),
-        "int_ceildivpow2: shift must be in 0..31"
+        (0..33).contains(&b),
+        "int_ceildivpow2: shift must be in 0..33"
     );
     ((a as i64 + (1i64 << b) - 1) >> b) as i32
 }

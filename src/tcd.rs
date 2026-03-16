@@ -375,6 +375,14 @@ impl Tcd {
             comp.x1 = int_ceildiv(tx1 as i32, img_comp.dx as i32);
             comp.y1 = int_ceildiv(ty1 as i32, img_comp.dy as i32);
 
+            if tccp.numresolutions == 0 || tccp.numresolutions as usize > crate::types::J2K_MAXRLVLS
+            {
+                return Err(Error::InvalidInput(format!(
+                    "component {compno}: numresolutions {} out of range 1..={}",
+                    tccp.numresolutions,
+                    crate::types::J2K_MAXRLVLS
+                )));
+            }
             let numresolutions = tccp.numresolutions as usize;
             comp.numresolutions = tccp.numresolutions;
             comp.minimum_num_resolutions = tccp.numresolutions;
@@ -1013,5 +1021,48 @@ mod tests {
         tcd.tile.comps[0].data = data.clone();
         tcd.dc_level_shift_encode(&tcp_no_shift);
         assert_eq!(tcd.tile.comps[0].data, data);
+    }
+
+    #[test]
+    fn init_tile_rejects_zero_numresolutions() {
+        let (image, cp, _) = create_test_setup(true);
+        let tcp = TileCodingParameters {
+            tccps: vec![TileCompCodingParameters {
+                numresolutions: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut tcd = Tcd::new(false);
+        assert!(tcd.init_tile(0, &image, &cp, &tcp, true).is_err());
+    }
+
+    #[test]
+    fn init_tile_rejects_excessive_numresolutions() {
+        let (image, cp, _) = create_test_setup(true);
+        let tcp = TileCodingParameters {
+            tccps: vec![TileCompCodingParameters {
+                numresolutions: 34, // > J2K_MAXRLVLS (33)
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut tcd = Tcd::new(false);
+        assert!(tcd.init_tile(0, &image, &cp, &tcp, true).is_err());
+    }
+
+    #[test]
+    fn init_tile_accepts_max_numresolutions() {
+        let (image, cp, _) = create_test_setup(true);
+        let tcp = TileCodingParameters {
+            tccps: vec![TileCompCodingParameters {
+                numresolutions: 33, // == J2K_MAXRLVLS
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut tcd = Tcd::new(false);
+        // Should succeed (33 is within J2K_MAXRLVLS)
+        assert!(tcd.init_tile(0, &image, &cp, &tcp, true).is_ok());
     }
 }
