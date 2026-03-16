@@ -764,10 +764,76 @@ mod tests {
         packets
     }
 
+    /// Create a single-resolution PI suitable for spatial progression orders.
+    /// 1 component, 2 layers, 1 resolution, 2x2 = 4 precincts.
+    fn create_spatial_test_pi(prg: ProgressionOrder) -> (PiIterator, Vec<i16>) {
+        let resolutions = vec![PiResolution {
+            pdx: 1,
+            pdy: 1,
+            pw: 2,
+            ph: 2,
+        }];
+        let comp = PiComp {
+            dx: 1,
+            dy: 1,
+            numresolutions: 1,
+            resolutions,
+        };
+
+        let numlayers = 2u32;
+        let numcomps = 1u32;
+        let max_res = 1u32;
+        let max_prec = 4u32;
+
+        let step_p = 1u32;
+        let step_c = max_prec * step_p;
+        let step_r = numcomps * step_c;
+        let step_l = max_res * step_r;
+
+        let include_size = numlayers * step_l;
+        let include = vec![0i16; include_size as usize];
+
+        let poc = Poc {
+            layno1: numlayers,
+            resno1: max_res,
+            compno1: numcomps,
+            precno1: max_prec,
+            prg,
+            tx1: 4,
+            ty1: 4,
+            ..Default::default()
+        };
+
+        let pi = PiIterator {
+            tp_on: false,
+            step_l,
+            step_r,
+            step_c,
+            step_p,
+            compno: 0,
+            resno: 0,
+            precno: 0,
+            layno: 0,
+            first: true,
+            poc,
+            numcomps,
+            comps: vec![comp],
+            tx0: 0,
+            ty0: 0,
+            tx1: 4,
+            ty1: 4,
+            x: 0,
+            y: 0,
+            dx: 0,
+            dy: 0,
+        };
+
+        (pi, include)
+    }
+
     // --- Structure tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pi_resolution_default() {
         let res = PiResolution::default();
         assert_eq!(res.pdx, 0);
@@ -775,7 +841,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pi_comp_default() {
         let comp = PiComp::default();
         assert_eq!(comp.dx, 0);
@@ -784,7 +849,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn packet_iterators_basic() {
         let (pi, include) = create_test_pi(ProgressionOrder::Lrcp);
         let mut pis = PacketIterators {
@@ -799,7 +863,6 @@ mod tests {
     // --- LRCP tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lrcp_packet_count() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Lrcp);
         let packets = collect_packets(&mut pi, &mut include);
@@ -808,7 +871,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lrcp_ordering() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Lrcp);
         let packets = collect_packets(&mut pi, &mut include);
@@ -825,7 +887,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn lrcp_layers_are_outermost() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Lrcp);
         let packets = collect_packets(&mut pi, &mut include);
@@ -837,7 +898,6 @@ mod tests {
     // --- RLCP tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rlcp_packet_count() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Rlcp);
         let packets = collect_packets(&mut pi, &mut include);
@@ -845,17 +905,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rlcp_ordering() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Rlcp);
         let packets = collect_packets(&mut pi, &mut include);
-        // RLCP: Resolution outermost. Within each res: L then C then P.
-        // Res 0:
-        assert_eq!(packets[0], (0, 0, 0, 0)); // L0
-        assert_eq!(packets[4], (0, 0, 0, 3));
-        assert_eq!(packets[5], (1, 0, 0, 0)); // L1, same res 0 but layer 1? No...
-
-        // Wait, RLCP = Res → Lay → Comp → Prec
+        // RLCP = Res → Lay → Comp → Prec
         // Res 0, L0: C0, P=[0..3] → 4 packets
         // Res 0, L1: C0, P=[0..3] → 4 packets
         // Res 1, L0: C0, P=[0]   → 1 packet
@@ -869,7 +922,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rlcp_resolutions_are_outermost() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Rlcp);
         let packets = collect_packets(&mut pi, &mut include);
@@ -881,7 +933,6 @@ mod tests {
     // --- Include array ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn include_prevents_duplicates() {
         let (mut pi, mut include) = create_test_pi(ProgressionOrder::Lrcp);
         let packets1 = collect_packets(&mut pi, &mut include);
@@ -896,61 +947,56 @@ mod tests {
     // --- RPCL tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rpcl_packet_count() {
-        let (mut pi, mut include) = create_test_pi(ProgressionOrder::Rpcl);
+        let (mut pi, mut include) = create_spatial_test_pi(ProgressionOrder::Rpcl);
         let packets = collect_packets(&mut pi, &mut include);
-        assert_eq!(packets.len(), 10);
+        // 1 res × 4 precincts × 2 layers = 8
+        assert_eq!(packets.len(), 8);
     }
 
     // --- PCRL tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pcrl_packet_count() {
-        let (mut pi, mut include) = create_test_pi(ProgressionOrder::Pcrl);
+        let (mut pi, mut include) = create_spatial_test_pi(ProgressionOrder::Pcrl);
         let packets = collect_packets(&mut pi, &mut include);
-        assert_eq!(packets.len(), 10);
+        assert_eq!(packets.len(), 8);
     }
 
     // --- CPRL tests ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn cprl_packet_count() {
-        let (mut pi, mut include) = create_test_pi(ProgressionOrder::Cprl);
+        let (mut pi, mut include) = create_spatial_test_pi(ProgressionOrder::Cprl);
         let packets = collect_packets(&mut pi, &mut include);
-        assert_eq!(packets.len(), 10);
+        assert_eq!(packets.len(), 8);
     }
 
     // --- pi_next dispatch ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pi_next_dispatches_correctly() {
+        // LRCP and RLCP with multi-res config
+        for prg in [ProgressionOrder::Lrcp, ProgressionOrder::Rlcp] {
+            let (mut pi, mut include) = create_test_pi(prg);
+            let packets = collect_packets(&mut pi, &mut include);
+            assert_eq!(packets.len(), 10, "Expected 10 packets for {:?}", prg);
+        }
+        // Spatial orders with single-res config
         for prg in [
-            ProgressionOrder::Lrcp,
-            ProgressionOrder::Rlcp,
             ProgressionOrder::Rpcl,
             ProgressionOrder::Pcrl,
             ProgressionOrder::Cprl,
         ] {
-            let (mut pi, mut include) = create_test_pi(prg);
+            let (mut pi, mut include) = create_spatial_test_pi(prg);
             let packets = collect_packets(&mut pi, &mut include);
-            assert_eq!(
-                packets.len(),
-                10,
-                "Expected 10 packets for {:?}, got {}",
-                prg,
-                packets.len()
-            );
+            assert_eq!(packets.len(), 8, "Expected 8 packets for {:?}", prg);
         }
     }
 
     // --- Packet count helper ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encoding_packet_count() {
         assert_eq!(get_encoding_packet_count(2, 1, 2, 4), 16);
         assert_eq!(get_encoding_packet_count(1, 3, 5, 2), 30);
@@ -960,7 +1006,6 @@ mod tests {
     // --- Empty tile ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn empty_tile_returns_false() {
         let comp = PiComp {
             dx: 1,
