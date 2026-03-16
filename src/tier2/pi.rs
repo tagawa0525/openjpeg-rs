@@ -322,20 +322,20 @@ fn compute_precinct_index(
     let rpx = res.pdx + levelno;
     let rpy = res.pdy + levelno;
 
-    // Check alignment: position must be at a precinct boundary for this component
-    let comp_dx_shifted = (comp.dx as u64) << rpy;
-    let comp_dy_shifted = (comp.dy as u64) << rpx; // Note: C code checks both x and y
-    if comp_dx_shifted == 0 || comp_dy_shifted == 0 {
+    // Precinct step in image coordinates for alignment checks
+    let x_step = (comp.dx as u64).checked_shl(rpx).unwrap_or(0);
+    let y_step = (comp.dy as u64).checked_shl(rpy).unwrap_or(0);
+    if x_step == 0 || y_step == 0 {
         return None;
     }
 
     // Check y alignment
-    if !(y as u64).is_multiple_of((comp.dy as u64) << rpy) && y != ty0 {
+    if !(y as u64).is_multiple_of(y_step) && y != ty0 {
         return None;
     }
 
     // Check x alignment
-    if !(x as u64).is_multiple_of((comp.dx as u64) << rpx) && x != tx0 {
+    if !(x as u64).is_multiple_of(x_step) && x != tx0 {
         return None;
     }
 
