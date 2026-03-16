@@ -1,11 +1,16 @@
-// Phase 400a: TCD (Tile Coder/Decoder) data structures
+// Phase 400a+d: TCD (Tile Coder/Decoder)
 //
 // Defines the TCD hierarchy: Tile → TileComp → Resolution → Band → Precinct → Codeblock.
-// Pipeline functions (init_tile, encode_tile, decode_tile) will be added in Phase 400d.
+// Provides pipeline functions for init_tile, DC level shift, MCT, DWT wrappers.
 
 use crate::coding::t1::TcdPass;
 use crate::coding::tgt::TagTree;
-use crate::types::J2K_MAXLAYERS;
+use crate::error::{Error, Result};
+use crate::image::Image;
+use crate::j2k::params::{CodingParameters, TileCodingParameters};
+use crate::types::{
+    J2K_MAXLAYERS, int_ceildiv, int_ceildivpow2, int_floordivpow2, uint_ceildiv, uint_ceildivpow2,
+};
 
 // ---------------------------------------------------------------------------
 // Layer / Codeblock structures
@@ -300,6 +305,290 @@ impl Tcd {
             win_y1: 0,
         }
     }
+
+    /// Initialize tile hierarchy from coding parameters (C: opj_tcd_init_tile).
+    ///
+    /// Builds the complete TCD hierarchy: tile → components → resolutions →
+    /// bands → precincts → codeblocks, computing geometry from the image
+    /// and coding parameters.
+    #[allow(clippy::too_many_lines)]
+    pub fn init_tile(
+        &mut self,
+        tileno: u32,
+        image: &Image,
+        cp: &CodingParameters,
+        tcp: &TileCodingParameters,
+        is_encoder: bool,
+    ) -> Result<()> {
+        if cp.tw == 0 || cp.th == 0 || tileno >= cp.tw * cp.th {
+            return Err(Error::InvalidInput(format!(
+                "tileno {tileno} out of range (tw={}, th={})",
+                cp.tw, cp.th
+            )));
+        }
+
+        let p = tileno % cp.tw;
+        let q = tileno / cp.tw;
+
+        // Tile boundaries clipped to image extent
+        let tx0 = (cp.tx0 + p * cp.tdx).max(image.x0);
+        let ty0 = (cp.ty0 + q * cp.tdy).max(image.y0);
+        let tx1 = (cp.tx0 + (p + 1) * cp.tdx).min(image.x1);
+        let ty1 = (cp.ty0 + (q + 1) * cp.tdy).min(image.y1);
+
+        if tx1 <= tx0 || ty1 <= ty0 {
+            return Err(Error::InvalidInput(format!(
+                "tile {tileno} has zero or negative area: ({tx0},{ty0})-({tx1},{ty1})"
+            )));
+        }
+
+        self.tile.x0 = tx0 as i32;
+        self.tile.y0 = ty0 as i32;
+        self.tile.x1 = tx1 as i32;
+        self.tile.y1 = ty1 as i32;
+        self.tcd_tileno = tileno;
+
+        let numcomps = image.comps.len();
+        self.tile.comps.resize_with(numcomps, TcdTileComp::default);
+
+        for compno in 0..numcomps {
+            let img_comp = &image.comps[compno];
+            let tccp = if compno < tcp.tccps.len() {
+                &tcp.tccps[compno]
+            } else {
+                return Err(Error::InvalidInput(format!(
+                    "missing TCCP for component {compno}"
+                )));
+            };
+
+            let comp = &mut self.tile.comps[compno];
+            comp.compno = compno as u32;
+
+            // Component-level tile boundaries (scaled by subsampling)
+            if img_comp.dx == 0 || img_comp.dy == 0 {
+                return Err(Error::InvalidInput(format!(
+                    "component {compno} has zero subsampling factor"
+                )));
+            }
+            comp.x0 = int_ceildiv(tx0 as i32, img_comp.dx as i32);
+            comp.y0 = int_ceildiv(ty0 as i32, img_comp.dy as i32);
+            comp.x1 = int_ceildiv(tx1 as i32, img_comp.dx as i32);
+            comp.y1 = int_ceildiv(ty1 as i32, img_comp.dy as i32);
+
+            let numresolutions = tccp.numresolutions as usize;
+            comp.numresolutions = tccp.numresolutions;
+            comp.minimum_num_resolutions = tccp.numresolutions;
+
+            comp.resolutions
+                .resize_with(numresolutions, TcdResolution::default);
+
+            // Allocate tile component data
+            let comp_w = (comp.x1 - comp.x0) as usize;
+            let comp_h = (comp.y1 - comp.y0) as usize;
+            comp.numpix = comp_w * comp_h;
+            if is_encoder && comp.data.len() < comp.numpix {
+                comp.data.resize(comp.numpix, 0);
+            }
+
+            // Build resolutions
+            for resno in 0..numresolutions {
+                let res = &mut comp.resolutions[resno];
+                let levelno = (numresolutions - 1 - resno) as i32;
+
+                // Resolution boundaries
+                res.x0 = int_ceildivpow2(comp.x0, levelno);
+                res.y0 = int_ceildivpow2(comp.y0, levelno);
+                res.x1 = int_ceildivpow2(comp.x1, levelno);
+                res.y1 = int_ceildivpow2(comp.y1, levelno);
+
+                // Precinct dimensions
+                let pdx = tccp.prcw[resno];
+                let pdy = tccp.prch[resno];
+
+                let tprc_x0 = int_floordivpow2(res.x0, pdx as i32) as u32;
+                let tprc_y0 = int_floordivpow2(res.y0, pdy as i32) as u32;
+                let bprc_x1 = uint_ceildivpow2(res.x1 as u32, pdx);
+                let bprc_y1 = uint_ceildivpow2(res.y1 as u32, pdy);
+
+                res.pw = if res.x1 > res.x0 {
+                    bprc_x1 - tprc_x0
+                } else {
+                    0
+                };
+                res.ph = if res.y1 > res.y0 {
+                    bprc_y1 - tprc_y0
+                } else {
+                    0
+                };
+
+                // Number of bands
+                res.numbands = if resno == 0 { 1 } else { 3 };
+                res.bands
+                    .resize_with(res.numbands as usize, TcdBand::default);
+
+                // Build bands
+                for bandno in 0..res.numbands as usize {
+                    let band = &mut res.bands[bandno];
+                    band.bandno = if resno == 0 { 0 } else { (bandno + 1) as u32 };
+
+                    // Band boundaries (subband decomposition)
+                    if resno == 0 {
+                        // LL band
+                        band.x0 = int_ceildivpow2(comp.x0, levelno);
+                        band.y0 = int_ceildivpow2(comp.y0, levelno);
+                        band.x1 = int_ceildivpow2(comp.x1, levelno);
+                        band.y1 = int_ceildivpow2(comp.y1, levelno);
+                    } else if levelno == 0 {
+                        // Highest resolution: band boundaries = resolution boundaries
+                        band.x0 = res.x0;
+                        band.y0 = res.y0;
+                        band.x1 = res.x1;
+                        band.y1 = res.y1;
+                    } else {
+                        // HL, LH, HH bands at lower resolution levels
+                        let half_level = 1i64 << (levelno - 1);
+                        let x0b = (band.bandno & 1) as i64;
+                        let y0b = (band.bandno >> 1) as i64;
+                        band.x0 = ((comp.x0 as i64 - half_level * x0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.y0 = ((comp.y0 as i64 - half_level * y0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.x1 = ((comp.x1 as i64 - half_level * x0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                        band.y1 = ((comp.y1 as i64 - half_level * y0b + (1i64 << levelno) - 1)
+                            >> levelno) as i32;
+                    }
+
+                    // Quantization stepsize
+                    let stepsize_idx = if resno == 0 {
+                        0
+                    } else {
+                        3 * (resno - 1) + bandno + 1
+                    };
+                    if stepsize_idx < tccp.stepsizes.len() {
+                        let ss = &tccp.stepsizes[stepsize_idx];
+                        let numbps = img_comp.prec as i32 + tccp.numgbits as i32;
+                        band.stepsize = ((1.0 + ss.mant as f32 / 2048.0)
+                            * f32::powi(2.0, numbps - ss.expn))
+                            * if tccp.qmfbid == 1 { 1.0 } else { 0.5 };
+                        band.numbps = ss.expn as i32 + tccp.numgbits as i32 - 1;
+                    }
+
+                    if band.is_empty() {
+                        continue;
+                    }
+
+                    // Build precincts
+                    let num_precincts = (res.pw * res.ph) as usize;
+                    band.precincts
+                        .resize_with(num_precincts, TcdPrecinct::default);
+
+                    let cblkw = 1u32 << tccp.cblkw.min(pdx);
+                    let cblkh = 1u32 << tccp.cblkh.min(pdy);
+
+                    for precno in 0..num_precincts {
+                        let prc = &mut band.precincts[precno];
+                        // Reset precinct to clean state
+                        *prc = TcdPrecinct::default();
+
+                        let pi = precno as u32 % res.pw;
+                        let pj = precno as u32 / res.pw;
+
+                        // Precinct boundaries with grid origin offset
+                        prc.x0 = ((tprc_x0 + pi) << pdx).max(band.x0 as u32) as i32;
+                        prc.y0 = ((tprc_y0 + pj) << pdy).max(band.y0 as u32) as i32;
+                        prc.x1 = ((tprc_x0 + pi + 1) << pdx).min(band.x1 as u32) as i32;
+                        prc.y1 = ((tprc_y0 + pj + 1) << pdy).min(band.y1 as u32) as i32;
+
+                        let prc_w = (prc.x1 - prc.x0).max(0) as u32;
+                        let prc_h = (prc.y1 - prc.y0).max(0) as u32;
+                        prc.cw = uint_ceildiv(prc_w, cblkw);
+                        prc.ch = uint_ceildiv(prc_h, cblkh);
+
+                        let num_cblks = (prc.cw * prc.ch) as usize;
+
+                        // Create tag trees
+                        if num_cblks > 0 {
+                            prc.incltree = Some(TagTree::new(prc.cw, prc.ch));
+                            prc.imsbtree = Some(TagTree::new(prc.cw, prc.ch));
+                        }
+
+                        // Create code blocks (clamp to both precinct and band bounds)
+                        let x1_max = prc.x1.min(band.x1);
+                        let y1_max = prc.y1.min(band.y1);
+                        if is_encoder {
+                            let mut cblks = vec![TcdCblkEnc::default(); num_cblks];
+                            for (cblkno, cblk) in cblks.iter_mut().enumerate() {
+                                let ci = cblkno as u32 % prc.cw;
+                                let cj = cblkno as u32 / prc.cw;
+                                cblk.x0 = (prc.x0 as u32 + ci * cblkw) as i32;
+                                cblk.y0 = (prc.y0 as u32 + cj * cblkh) as i32;
+                                cblk.x1 = (cblk.x0 + cblkw as i32).min(x1_max);
+                                cblk.y1 = (cblk.y0 + cblkh as i32).min(y1_max);
+                            }
+                            prc.cblks = TcdCodeBlocks::Enc(cblks);
+                        } else {
+                            let mut cblks = vec![TcdCblkDec::default(); num_cblks];
+                            for (cblkno, cblk) in cblks.iter_mut().enumerate() {
+                                let ci = cblkno as u32 % prc.cw;
+                                let cj = cblkno as u32 / prc.cw;
+                                cblk.x0 = (prc.x0 as u32 + ci * cblkw) as i32;
+                                cblk.y0 = (prc.y0 as u32 + cj * cblkh) as i32;
+                                cblk.x1 = (cblk.x0 + cblkw as i32).min(x1_max);
+                                cblk.y1 = (cblk.y0 + cblkh as i32).min(y1_max);
+                            }
+                            prc.cblks = TcdCodeBlocks::Dec(cblks);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Compute tile pixel count
+        let tile_w = (self.tile.x1 - self.tile.x0) as usize;
+        let tile_h = (self.tile.y1 - self.tile.y0) as usize;
+        self.tile.numpix = tile_w * tile_h;
+
+        Ok(())
+    }
+
+    /// Apply DC level shift for encoding (C: opj_tcd_dc_level_shift_encode).
+    ///
+    /// Subtracts the DC level shift from each sample before encoding.
+    pub fn dc_level_shift_encode(&mut self, tcp: &TileCodingParameters) {
+        for (compno, comp) in self.tile.comps.iter_mut().enumerate() {
+            let dc_shift = if compno < tcp.tccps.len() {
+                tcp.tccps[compno].m_dc_level_shift
+            } else {
+                0
+            };
+            if dc_shift == 0 {
+                continue;
+            }
+            for sample in comp.data.iter_mut() {
+                *sample -= dc_shift;
+            }
+        }
+    }
+
+    /// Apply DC level shift for decoding (C: opj_tcd_dc_level_shift_decode).
+    ///
+    /// Adds the DC level shift back to each sample after decoding.
+    pub fn dc_level_shift_decode(&mut self, tcp: &TileCodingParameters) {
+        for (compno, comp) in self.tile.comps.iter_mut().enumerate() {
+            let dc_shift = if compno < tcp.tccps.len() {
+                tcp.tccps[compno].m_dc_level_shift
+            } else {
+                0
+            };
+            if dc_shift == 0 {
+                continue;
+            }
+            for sample in comp.data.iter_mut() {
+                *sample += dc_shift;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -562,5 +851,167 @@ mod tests {
         };
         assert_eq!(pass.rate, 100);
         assert_eq!(pass.len, 50);
+    }
+
+    // --- Pipeline tests (Phase 400d) ---
+
+    use crate::image::{Image, ImageCompParam};
+    use crate::j2k::params::{
+        CodingParamMode, CodingParameters, DecodingParam, EncodingParam, TileCodingParameters,
+        TileCompCodingParameters,
+    };
+    use crate::types::ColorSpace;
+
+    /// Create a minimal 64x64, 1-component grayscale image + coding parameters
+    /// for pipeline testing.
+    fn create_test_setup(is_encoder: bool) -> (Image, CodingParameters, TileCodingParameters) {
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 64,
+            h: 64,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 64;
+        image.y1 = 64;
+
+        let tccp = TileCompCodingParameters {
+            numresolutions: 2,
+            cblkw: 6, // 64
+            cblkh: 6,
+            qmfbid: 1,             // 5-3 reversible
+            m_dc_level_shift: 128, // 8-bit unsigned → shift by 128
+            ..Default::default()
+        };
+        let tcp = TileCodingParameters {
+            tccps: vec![tccp],
+            ..Default::default()
+        };
+
+        let cp = CodingParameters {
+            tx0: 0,
+            ty0: 0,
+            tdx: 64,
+            tdy: 64,
+            tw: 1,
+            th: 1,
+            tcps: vec![tcp.clone()],
+            mode: if is_encoder {
+                CodingParamMode::Encoder(EncodingParam::default())
+            } else {
+                CodingParamMode::Decoder(DecodingParam::default())
+            },
+            ..CodingParameters::new_encoder()
+        };
+
+        (image, cp, tcp)
+    }
+
+    #[test]
+    fn init_tile_basic_hierarchy() {
+        let (image, cp, tcp) = create_test_setup(true);
+        let mut tcd = Tcd::new(false);
+        tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+
+        // Tile boundaries
+        assert_eq!(tcd.tile.x0, 0);
+        assert_eq!(tcd.tile.y0, 0);
+        assert_eq!(tcd.tile.x1, 64);
+        assert_eq!(tcd.tile.y1, 64);
+
+        // 1 component
+        assert_eq!(tcd.tile.comps.len(), 1);
+        let comp = &tcd.tile.comps[0];
+        assert_eq!(comp.x0, 0);
+        assert_eq!(comp.x1, 64);
+        assert_eq!(comp.numresolutions, 2);
+
+        // 2 resolution levels
+        assert_eq!(comp.resolutions.len(), 2);
+
+        // Res 0 (coarsest): 32x32
+        let res0 = &comp.resolutions[0];
+        assert_eq!(res0.x1 - res0.x0, 32);
+        assert_eq!(res0.y1 - res0.y0, 32);
+        assert_eq!(res0.numbands, 1); // LL only
+
+        // Res 1 (finest): 64x64
+        let res1 = &comp.resolutions[1];
+        assert_eq!(res1.x1 - res1.x0, 64);
+        assert_eq!(res1.y1 - res1.y0, 64);
+        assert_eq!(res1.numbands, 3); // HL, LH, HH
+    }
+
+    #[test]
+    fn init_tile_codeblocks_created() {
+        let (image, cp, tcp) = create_test_setup(true);
+        let mut tcd = Tcd::new(false);
+        tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+
+        // Check encoder code blocks exist
+        let res0 = &tcd.tile.comps[0].resolutions[0];
+        assert!(res0.pw > 0);
+        assert!(res0.ph > 0);
+        let band0 = &res0.bands[0];
+        assert!(!band0.precincts.is_empty());
+        let prc = &band0.precincts[0];
+        assert!(matches!(prc.cblks, TcdCodeBlocks::Enc(_)));
+        assert!(prc.incltree.is_some());
+        assert!(prc.imsbtree.is_some());
+    }
+
+    #[test]
+    fn init_tile_decoder_codeblocks() {
+        let (image, cp, tcp) = create_test_setup(false);
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
+
+        let res0 = &tcd.tile.comps[0].resolutions[0];
+        let band0 = &res0.bands[0];
+        let prc = &band0.precincts[0];
+        assert!(matches!(prc.cblks, TcdCodeBlocks::Dec(_)));
+    }
+
+    #[test]
+    fn dc_level_shift_roundtrip() {
+        let (image, cp, tcp) = create_test_setup(true);
+        let mut tcd = Tcd::new(false);
+        tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+
+        // Fill with test data
+        let original: Vec<i32> = (0..tcd.tile.comps[0].data.len() as i32).collect();
+        tcd.tile.comps[0].data = original.clone();
+
+        // Encode shift: subtract 128
+        tcd.dc_level_shift_encode(&tcp);
+        assert_eq!(tcd.tile.comps[0].data[0], original[0] - 128);
+        assert_eq!(tcd.tile.comps[0].data[100], original[100] - 128);
+
+        // Decode shift: add 128
+        tcd.dc_level_shift_decode(&tcp);
+        assert_eq!(tcd.tile.comps[0].data, original);
+    }
+
+    #[test]
+    fn dc_level_shift_zero_is_noop() {
+        let (image, cp, _) = create_test_setup(true);
+        let tcp_no_shift = TileCodingParameters {
+            tccps: vec![TileCompCodingParameters {
+                m_dc_level_shift: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut tcd = Tcd::new(false);
+        tcd.init_tile(0, &image, &cp, &tcp_no_shift, true).unwrap();
+
+        let data: Vec<i32> = vec![42; tcd.tile.comps[0].data.len()];
+        tcd.tile.comps[0].data = data.clone();
+        tcd.dc_level_shift_encode(&tcp_no_shift);
+        assert_eq!(tcd.tile.comps[0].data, data);
     }
 }
