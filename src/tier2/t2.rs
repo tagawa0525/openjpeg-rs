@@ -74,11 +74,13 @@ pub fn t2_getnumpasses(bio: &mut Bio) -> Result<u32> {
     if bio.read(1)? == 0 {
         return Ok(2);
     }
-    if bio.read(1)? == 0 {
-        return Ok(3 + bio.read(2)?);
+    let n = bio.read(2)?;
+    if n != 3 {
+        return Ok(3 + n);
     }
-    if bio.read(1)? == 0 {
-        return Ok(6 + bio.read(5)?);
+    let n = bio.read(5)?;
+    if n != 31 {
+        return Ok(6 + n);
     }
     Ok(37 + bio.read(7)?)
 }
@@ -151,7 +153,6 @@ mod tests {
     // --- Comma code ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn comma_code_roundtrip() {
         for n in 0..20 {
             let mut buf = vec![0u8; 16];
@@ -169,7 +170,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn comma_code_zero() {
         let mut buf = vec![0u8; 4];
         {
@@ -186,7 +186,6 @@ mod tests {
     // --- Number of passes ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn numpasses_roundtrip() {
         for n in 1..=164 {
             let mut buf = vec![0u8; 16];
@@ -204,7 +203,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn numpasses_boundary_values() {
         for n in [1, 2, 3, 5, 6, 36, 37, 164] {
             let mut buf = vec![0u8; 16];
@@ -224,7 +222,6 @@ mod tests {
     // --- Segment initialization ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_seg_default_maxpasses() {
         let mut segs = Vec::new();
         t2_init_seg(&mut segs, 0, 0, true);
@@ -235,7 +232,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_seg_termall() {
         let mut segs = Vec::new();
         t2_init_seg(&mut segs, 0, J2K_CCP_CBLKSTY_TERMALL, true);
@@ -243,7 +239,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_seg_lazy_alternation() {
         let mut segs = Vec::new();
         // First segment: 10 passes
@@ -258,7 +253,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn init_seg_grows_vector() {
         let mut segs = Vec::new();
         t2_init_seg(&mut segs, 5, 0, true);
@@ -269,7 +263,6 @@ mod tests {
     // --- Pass bits ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn pass_bits_ranges() {
         assert_eq!(t2_getpassbits(0), 1);
         assert_eq!(t2_getpassbits(1), 1);
