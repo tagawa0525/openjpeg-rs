@@ -375,6 +375,12 @@ impl Tcd {
             comp.x1 = int_ceildiv(tx1 as i32, img_comp.dx as i32);
             comp.y1 = int_ceildiv(ty1 as i32, img_comp.dy as i32);
 
+            if tccp.numresolutions == 0 || tccp.numresolutions > 32 {
+                return Err(Error::InvalidInput(format!(
+                    "component {compno}: numresolutions {} out of range 1..=32",
+                    tccp.numresolutions
+                )));
+            }
             let numresolutions = tccp.numresolutions as usize;
             comp.numresolutions = tccp.numresolutions;
             comp.minimum_num_resolutions = tccp.numresolutions;
