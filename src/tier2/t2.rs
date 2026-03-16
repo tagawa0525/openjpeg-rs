@@ -122,7 +122,11 @@ pub fn t2_init_seg(segs: &mut Vec<TcdSeg>, index: usize, cblksty: u32, first: bo
         if first {
             seg.maxpasses = 10;
         } else {
-            seg.maxpasses = if prev_maxpasses == 10 { 2 } else { 1 };
+            seg.maxpasses = if prev_maxpasses == 1 || prev_maxpasses == 10 {
+                2
+            } else {
+                1
+            };
         }
     } else {
         seg.maxpasses = 109; // (37-1)*3+1 per JPEG 2000 spec
@@ -247,9 +251,15 @@ mod tests {
         // Second segment: 2 (since previous was 10)
         t2_init_seg(&mut segs, 1, J2K_CCP_CBLKSTY_LAZY, false);
         assert_eq!(segs[1].maxpasses, 2);
-        // Third segment: 1 (since previous was 2, which != 10)
+        // Third segment: 1 (since previous was 2)
         t2_init_seg(&mut segs, 2, J2K_CCP_CBLKSTY_LAZY, false);
         assert_eq!(segs[2].maxpasses, 1);
+        // Fourth segment: 2 (since previous was 1)
+        t2_init_seg(&mut segs, 3, J2K_CCP_CBLKSTY_LAZY, false);
+        assert_eq!(segs[3].maxpasses, 2);
+        // Fifth segment: 1 (since previous was 2)
+        t2_init_seg(&mut segs, 4, J2K_CCP_CBLKSTY_LAZY, false);
+        assert_eq!(segs[4].maxpasses, 1);
     }
 
     #[test]
