@@ -13,6 +13,7 @@ use crate::types::{
 
 /// T2 processing mode (C: J2K_T2_MODE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
 pub enum T2Mode {
     /// Rate allocation threshold calculation.
     ThreshCalc = 0,
@@ -22,6 +23,7 @@ pub enum T2Mode {
 
 /// Quality layer allocation strategy (C: J2K_QUALITY_LAYER_ALLOCATION_STRATEGY).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
 pub enum QualityLayerAllocStrategy {
     /// Allocation by rate/distortion ratio.
     #[default]
