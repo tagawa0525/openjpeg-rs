@@ -4,5 +4,6 @@ pub mod image;
 pub mod io;
 pub mod j2k;
 pub mod tcd;
+pub mod tier2;
 pub mod transform;
 pub mod types;
