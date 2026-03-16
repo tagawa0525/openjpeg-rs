@@ -279,6 +279,8 @@ pub const J2K_CCP_CBLKSTY_SEGSYM: u32 = 0x20;
 
 /// Maximum number of POC entries (C: J2K_MAX_POCS).
 pub const J2K_MAX_POCS: usize = 32;
+/// Maximum number of quality layers (C: 100, used for rates/distoratio/distolayer arrays).
+pub const J2K_MAXLAYERS: usize = 100;
 
 /// Coding style: precinct size defined (C: J2K_CP_CSTY_PRT).
 pub const J2K_CP_CSTY_PRT: u32 = 0x01;

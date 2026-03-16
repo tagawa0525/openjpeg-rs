@@ -5,6 +5,7 @@
 
 use crate::coding::t1::TcdPass;
 use crate::coding::tgt::TagTree;
+use crate::types::J2K_MAXLAYERS;
 
 // ---------------------------------------------------------------------------
 // Layer / Codeblock structures
@@ -225,7 +226,7 @@ pub struct TcdTile {
     /// Total distortion for the tile.
     pub distotile: f64,
     /// Distortion per layer.
-    pub distolayer: [f64; 100],
+    pub distolayer: [f64; J2K_MAXLAYERS],
     /// Current packet number.
     pub packno: u32,
 }
@@ -240,7 +241,7 @@ impl Default for TcdTile {
             comps: Vec::new(),
             numpix: 0,
             distotile: 0.0,
-            distolayer: [0.0; 100],
+            distolayer: [0.0; J2K_MAXLAYERS],
             packno: 0,
         }
     }
@@ -451,7 +452,7 @@ mod tests {
         assert_eq!(tile.numpix, 0);
         assert_eq!(tile.distotile, 0.0);
         assert_eq!(tile.packno, 0);
-        assert_eq!(tile.distolayer.len(), 100);
+        assert_eq!(tile.distolayer.len(), J2K_MAXLAYERS);
     }
 
     // --- Tcd ---

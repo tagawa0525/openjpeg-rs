@@ -4,7 +4,8 @@
 // Marker read/write logic will be added in Phase 500.
 
 use crate::types::{
-    COMP_PARAM_DEFAULT_NUMRESOLUTION, J2K_MAX_POCS, J2K_MAXBANDS, J2K_MAXRLVLS, ProgressionOrder,
+    COMP_PARAM_DEFAULT_NUMRESOLUTION, J2K_MAX_POCS, J2K_MAXBANDS, J2K_MAXLAYERS, J2K_MAXRLVLS,
+    ProgressionOrder,
 };
 
 // ---------------------------------------------------------------------------
@@ -198,13 +199,13 @@ pub struct TileCodingParameters {
     /// Multi-component transform: 0=none, 1=ICT/RCT (C: mct).
     pub mct: u32,
     /// Target bit-rates per layer (C: rates).
-    pub rates: [f32; 100],
+    pub rates: [f32; J2K_MAXLAYERS],
     /// Number of POCs (C: numpocs).
     pub numpocs: u32,
     /// POC entries (C: pocs).
     pub pocs: Vec<Poc>,
     /// Target distortion ratios per layer (C: distoratio).
-    pub distoratio: [f32; 100],
+    pub distoratio: [f32; J2K_MAXLAYERS],
     /// Per-component coding parameters (C: tccps).
     pub tccps: Vec<TileCompCodingParameters>,
     /// Custom MCT norms (C: mct_norms).
@@ -229,10 +230,10 @@ impl Default for TileCodingParameters {
             numlayers: 1,
             num_layers_to_decode: 1,
             mct: 0,
-            rates: [0.0; 100],
+            rates: [0.0; J2K_MAXLAYERS],
             numpocs: 0,
             pocs: vec![Poc::default(); J2K_MAX_POCS],
-            distoratio: [0.0; 100],
+            distoratio: [0.0; J2K_MAXLAYERS],
             tccps: Vec::new(),
             mct_norms: None,
             m_mct_decoding_matrix: None,
