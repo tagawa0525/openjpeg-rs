@@ -57,7 +57,7 @@ pub enum Marker {
 }
 
 impl Marker {
-    /// Try to convert a u16 value to a known Marker.
+    /// Convert a u16 value to a Marker. Unknown values map to `Marker::Unk`.
     pub fn from_u16(val: u16) -> Self {
         match val {
             0xFF4F => Marker::Soc,
