@@ -97,9 +97,9 @@ impl PacketIterators {
     /// Advance the iterator at index `pino` to the next unvisited packet.
     /// Returns `true` if a packet was found, `false` if exhausted.
     pub fn next(&mut self, pino: usize) -> bool {
-        let (before, rest) = self.iterators.split_at_mut(pino);
-        let pi = &mut rest[0];
-        let _ = before; // suppress unused warning
+        let Some(pi) = self.iterators.get_mut(pino) else {
+            return false;
+        };
         pi_next(pi, &mut self.include)
     }
 
