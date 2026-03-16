@@ -8,6 +8,7 @@ use crate::transform::dwt::{dwt_getnorm, dwt_getnorm_real};
 use crate::types::*;
 
 /// Encoding pass information (C: opj_tcd_pass_t).
+#[derive(Debug, Default, Clone)]
 pub struct TcdPass {
     pub rate: u32,
     pub distortion_decrease: f64,

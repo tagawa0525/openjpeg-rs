@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::io::bio::Bio;
 
 /// Tag tree node.
+#[derive(Debug, Clone)]
 struct TgtNode {
     parent: Option<usize>,
     value: i32,
@@ -15,6 +16,7 @@ struct TgtNode {
 ///
 /// Hierarchical structure for progressive encoding of inclusion/zero-bit-plane
 /// information in Tier-2 coding. Leaf values propagate upward as minimums.
+#[derive(Debug, Clone)]
 pub struct TagTree {
     #[allow(dead_code)]
     numleafsh: u32,
