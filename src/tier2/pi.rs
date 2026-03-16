@@ -123,6 +123,29 @@ impl PacketIterators {
 // Progression order functions
 // ---------------------------------------------------------------------------
 
+/// Compute flattened include array index using u64 to avoid u32 overflow.
+/// Returns `None` if the index is out of bounds.
+#[inline]
+fn include_index(
+    pi: &PiIterator,
+    layno: u32,
+    resno: u32,
+    compno: u32,
+    precno: u32,
+    include_len: usize,
+) -> Option<usize> {
+    let index = layno as u64 * pi.step_l as u64
+        + resno as u64 * pi.step_r as u64
+        + compno as u64 * pi.step_c as u64
+        + precno as u64 * pi.step_p as u64;
+    let index = index as usize;
+    if index < include_len {
+        Some(index)
+    } else {
+        None
+    }
+}
+
 /// Dispatch to the appropriate progression order function.
 pub fn pi_next(pi: &mut PiIterator, include: &mut [i16]) -> bool {
     match pi.poc.prg {
@@ -182,13 +205,11 @@ fn pi_next_lrcp(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 
                 for precno in precno_start..precno1 {
                     pi.precno = precno;
-                    let index = (layno * pi.step_l
-                        + resno * pi.step_r
-                        + compno * pi.step_c
-                        + precno * pi.step_p) as usize;
-                    if index >= include.len() {
+                    let Some(index) =
+                        include_index(pi, layno, resno, compno, precno, include.len())
+                    else {
                         return false;
-                    }
+                    };
                     if include[index] == 0 {
                         include[index] = 1;
                         return true;
@@ -248,13 +269,11 @@ fn pi_next_rlcp(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 
                 for precno in precno_start..precno1 {
                     pi.precno = precno;
-                    let index = (layno * pi.step_l
-                        + resno * pi.step_r
-                        + compno * pi.step_c
-                        + precno * pi.step_p) as usize;
-                    if index >= include.len() {
+                    let Some(index) =
+                        include_index(pi, layno, resno, compno, precno, include.len())
+                    else {
                         return false;
-                    }
+                    };
                     if include[index] == 0 {
                         include[index] = 1;
                         return true;
@@ -436,13 +455,11 @@ fn pi_next_rpcl(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 
                     for layno in layno_start..pi.poc.layno1 {
                         pi.layno = layno;
-                        let index = (layno * pi.step_l
-                            + resno * pi.step_r
-                            + compno * pi.step_c
-                            + precno * pi.step_p) as usize;
-                        if index >= include.len() {
+                        let Some(index) =
+                            include_index(pi, layno, resno, compno, precno, include.len())
+                        else {
                             return false;
-                        }
+                        };
                         if include[index] == 0 {
                             include[index] = 1;
                             return true;
@@ -533,13 +550,11 @@ fn pi_next_pcrl(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 
                     for layno in layno_start..pi.poc.layno1 {
                         pi.layno = layno;
-                        let index = (layno * pi.step_l
-                            + resno * pi.step_r
-                            + compno * pi.step_c
-                            + precno * pi.step_p) as usize;
-                        if index >= include.len() {
+                        let Some(index) =
+                            include_index(pi, layno, resno, compno, precno, include.len())
+                        else {
                             return false;
-                        }
+                        };
                         if include[index] == 0 {
                             include[index] = 1;
                             return true;
@@ -630,13 +645,11 @@ fn pi_next_cprl(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 
                     for layno in layno_start..pi.poc.layno1 {
                         pi.layno = layno;
-                        let index = (layno * pi.step_l
-                            + resno * pi.step_r
-                            + compno * pi.step_c
-                            + precno * pi.step_p) as usize;
-                        if index >= include.len() {
+                        let Some(index) =
+                            include_index(pi, layno, resno, compno, precno, include.len())
+                        else {
                             return false;
-                        }
+                        };
                         if include[index] == 0 {
                             include[index] = 1;
                             return true;
