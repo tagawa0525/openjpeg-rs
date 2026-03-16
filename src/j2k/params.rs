@@ -202,8 +202,8 @@ pub struct TileCodingParameters {
     pub rates: [f32; J2K_MAXLAYERS],
     /// Number of POCs (C: numpocs).
     pub numpocs: u32,
-    /// POC entries (C: pocs).
-    pub pocs: Vec<Poc>,
+    /// POC entries (C: pocs). Fixed-size; `numpocs` indicates active entries.
+    pub pocs: [Poc; J2K_MAX_POCS],
     /// Target distortion ratios per layer (C: distoratio).
     pub distoratio: [f32; J2K_MAXLAYERS],
     /// Per-component coding parameters (C: tccps).
@@ -232,7 +232,7 @@ impl Default for TileCodingParameters {
             mct: 0,
             rates: [0.0; J2K_MAXLAYERS],
             numpocs: 0,
-            pocs: vec![Poc::default(); J2K_MAX_POCS],
+            pocs: [Poc::default(); J2K_MAX_POCS],
             distoratio: [0.0; J2K_MAXLAYERS],
             tccps: Vec::new(),
             mct_norms: None,
