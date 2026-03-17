@@ -510,7 +510,7 @@ mod tests {
 
         // SOT marker (tile 0)
         let tile_data = vec![0u8; 4];
-        let psot = 12 + 2 + tile_data.len();
+        let psot: u32 = 12 + 2 + tile_data.len() as u32;
         buf.extend_from_slice(&[0xFF, 0x90]);
         buf.extend_from_slice(&10u16.to_be_bytes());
         buf.extend_from_slice(&0u16.to_be_bytes());
@@ -553,7 +553,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_box_header_basic() {
         let mut data = Vec::new();
         data.extend_from_slice(&22u32.to_be_bytes());
@@ -567,7 +566,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_box_header_last_box() {
         // length=0 means "extends to end of stream"
         let mut data = Vec::new();
@@ -586,7 +584,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp_signature_valid() {
         let mut dec = Jp2Decoder::new();
         dec.read_jp(&JP2_MAGIC.to_be_bytes()).unwrap();
@@ -594,7 +591,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp_signature_bad_magic() {
         let mut dec = Jp2Decoder::new();
         let result = dec.read_jp(&0xDEADBEEFu32.to_be_bytes());
@@ -602,7 +598,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp_signature_wrong_state() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Signature; // already past initial state
@@ -611,7 +606,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_ftyp_valid() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Signature;
@@ -624,7 +618,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_ftyp_wrong_state() {
         let mut dec = Jp2Decoder::new();
         // state is None, not Signature
@@ -634,7 +627,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_ihdr_valid() {
         let mut dec = Jp2Decoder::new();
         let data = {
@@ -663,7 +655,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_ihdr_zero_dimensions_fails() {
         let mut dec = Jp2Decoder::new();
         let mut data = Vec::new();
@@ -678,7 +669,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_ihdr_bad_size_fails() {
         let mut dec = Jp2Decoder::new();
         let data = vec![0u8; 10]; // too short
@@ -686,7 +676,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_colr_enumerated() {
         let mut dec = Jp2Decoder::new();
         let mut data = Vec::new();
@@ -701,7 +690,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_colr_icc() {
         let mut dec = Jp2Decoder::new();
         let mut data = Vec::new();
@@ -715,7 +703,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_colr_duplicate_ignored() {
         let mut dec = Jp2Decoder::new();
         let mut data = Vec::new();
@@ -737,7 +724,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_bpcc_valid() {
         let mut dec = Jp2Decoder::new();
         // First set up IHDR with bpc=255 (varies)
@@ -760,7 +746,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_bpcc_before_ihdr_fails() {
         let mut dec = Jp2Decoder::new();
         let data = vec![8, 10, 12];
@@ -768,7 +753,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_bpcc_wrong_size_fails() {
         let mut dec = Jp2Decoder::new();
         let mut ihdr = Vec::new();
@@ -790,7 +774,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2h_with_ihdr_and_colr() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::FileType;
@@ -810,7 +793,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2h_missing_ihdr_fails() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::FileType;
@@ -825,7 +807,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2_header_minimal() {
         let jp2_data = build_minimal_jp2();
         let mut stream = MemoryStream::new_input(jp2_data);
@@ -843,7 +824,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2_header_then_codestream() {
         let jp2_data = build_minimal_jp2();
         let mut stream = MemoryStream::new_input(jp2_data);
@@ -860,7 +840,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2_colour_applied_to_image() {
         let jp2_data = build_minimal_jp2(); // gray (enumcs=17)
         let mut stream = MemoryStream::new_input(jp2_data);
@@ -873,7 +852,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2_srgb_colour() {
         let mut file = Vec::new();
         file.extend_from_slice(&build_jp_box());
@@ -891,7 +869,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_jp2_jp2c_before_header_fails() {
         // JP2C without JP/FTYP/JP2H
         let j2k = build_minimal_j2k(8, 8, 1);
@@ -907,7 +884,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn read_codestream_before_header_fails() {
         let jp2_data = build_minimal_jp2();
         let mut stream = MemoryStream::new_input(jp2_data);
