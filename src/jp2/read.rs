@@ -4,6 +4,7 @@
 // then delegates J2K codestream decoding to J2kDecoder.
 
 use crate::error::{Error, Result};
+use crate::image::ImageComp;
 use crate::io::cio::{MemoryStream, read_bytes_be};
 use crate::j2k::read::J2kDecoder;
 use crate::jp2::{
@@ -655,36 +656,54 @@ impl Jp2Decoder {
             None => return,
         };
 
-        let old_comps = &self.j2k.image.comps;
+        let mut old_comps = std::mem::take(&mut self.j2k.image.comps);
         let nr_channels = cmap.len();
         let nr_entries = pclr.nr_entries as usize;
         let max_idx = nr_entries.saturating_sub(1) as i32;
 
+        // Track which old components have been moved (direct mapping)
+        let mut moved = vec![false; old_comps.len()];
         let mut new_comps = Vec::with_capacity(nr_channels);
 
-        for (ch, entry) in cmap.iter().enumerate() {
+        for entry in &cmap {
             let src_idx = entry.cmp as usize;
             if src_idx >= old_comps.len() {
                 continue;
             }
-            let src = &old_comps[src_idx];
 
             if entry.mtyp == 0 {
-                // Direct mapping: copy component as-is
-                new_comps.push(src.clone());
+                // Direct mapping: move component if not yet moved, else clone
+                if !moved[src_idx] {
+                    moved[src_idx] = true;
+                    new_comps.push(std::mem::take(&mut old_comps[src_idx]));
+                } else {
+                    new_comps.push(old_comps[src_idx].clone());
+                }
             } else {
                 // Palette mapping: lookup each pixel
                 let pcol = entry.pcol as usize;
                 let nr_ch = pclr.nr_channels as usize;
+                let src = &old_comps[src_idx];
                 let mut data = Vec::with_capacity(src.data.len());
                 for &idx in &src.data {
                     let k = idx.clamp(0, max_idx) as usize;
                     data.push(pclr.entries[k * nr_ch + pcol] as i32);
                 }
-                let mut comp = src.clone();
-                comp.data = data;
-                comp.prec = pclr.channel_size[pcol] as u32;
-                comp.sgnd = pclr.channel_sign[pcol];
+                let mut comp = ImageComp {
+                    dx: src.dx,
+                    dy: src.dy,
+                    w: src.w,
+                    h: src.h,
+                    x0: src.x0,
+                    y0: src.y0,
+                    prec: pclr.channel_size[pcol] as u32,
+                    sgnd: pclr.channel_sign[pcol],
+                    resno_decoded: src.resno_decoded,
+                    factor: src.factor,
+                    data,
+                    alpha: src.alpha,
+                };
+                let _ = &mut comp; // suppress unused_mut if needed
                 new_comps.push(comp);
             }
         }
