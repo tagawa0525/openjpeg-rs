@@ -117,7 +117,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_header_starts_with_soc_siz() {
         let (image, cp, tcp) = create_test_image_and_params();
         let mut enc = J2kEncoder::new();
@@ -130,7 +129,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_tile_patches_psot() {
         let (image, cp, tcp) = create_test_image_and_params();
         let mut enc = J2kEncoder::new();
@@ -151,7 +149,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_finalize_ends_with_eoc() {
         let (image, cp, tcp) = create_test_image_and_params();
         let mut enc = J2kEncoder::new();
@@ -164,7 +161,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_roundtrip_header() {
         let (image, cp, tcp) = create_test_image_and_params();
         let mut enc = J2kEncoder::new();
@@ -189,7 +185,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_roundtrip_tiles() {
         let (image, cp, tcp) = create_test_image_and_params();
         let mut enc = J2kEncoder::new();
