@@ -368,7 +368,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_minimal_header() {
         let data = build_minimal_j2k();
         let mut stream = MemoryStream::new_input(data);
@@ -387,7 +386,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_minimal_tile_part() {
         let data = build_minimal_j2k();
         let mut stream = MemoryStream::new_input(data);
@@ -402,7 +400,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_all_tiles_then_eoc() {
         let data = build_minimal_j2k();
         let mut stream = MemoryStream::new_input(data);
@@ -416,7 +413,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_missing_siz_fails() {
         let mut buf = Vec::new();
         buf.extend_from_slice(&[0xFF, 0x4F]); // SOC
@@ -429,7 +425,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn sot_marker_parsing() {
         let data = vec![
             0x00, 0x02, // Isot = 2
