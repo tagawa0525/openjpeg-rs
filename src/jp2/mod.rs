@@ -96,8 +96,10 @@ impl Default for Jp2Colour {
 /// Per-component info from IHDR/BPCC (C: opj_jp2_comps_t).
 #[derive(Debug, Clone, Default)]
 pub struct Jp2CompInfo {
-    /// Bit depth (from BPC or BPCC).
-    pub bpcc: u8,
+    /// Bit precision (decoded from raw BPC/BPCC: (raw & 0x7F) + 1).
+    pub prec: u8,
+    /// Whether the component is signed (bit 7 of raw BPC/BPCC).
+    pub sgnd: bool,
 }
 
 /// JP2 box header (C: opj_jp2_box_t).

@@ -305,9 +305,11 @@ impl Jp2Decoder {
         // Initialize per-component info
         self.comp_info = vec![Jp2CompInfo::default(); self.numcomps as usize];
         if self.bpc != 255 {
-            // Uniform BPC
+            // Uniform BPC: decode to (prec, sgnd)
+            let (prec, sgnd) = decode_bpc(self.bpc);
             for ci in &mut self.comp_info {
-                ci.bpcc = self.bpc;
+                ci.prec = prec;
+                ci.sgnd = sgnd;
             }
         }
 
@@ -369,7 +371,9 @@ impl Jp2Decoder {
             )));
         }
         for (i, &b) in data.iter().enumerate() {
-            self.comp_info[i].bpcc = b;
+            let (prec, sgnd) = decode_bpc(b);
+            self.comp_info[i].prec = prec;
+            self.comp_info[i].sgnd = sgnd;
         }
         Ok(())
     }
@@ -391,6 +395,15 @@ impl Jp2Decoder {
         };
         self.j2k.image.color_space = cs;
     }
+}
+
+/// Decode a raw BPC/BPCC byte into (precision, signed).
+///
+/// JP2 encoding: bit 7 = signedness, bits 0-6 = (precision - 1).
+fn decode_bpc(raw: u8) -> (u8, bool) {
+    let prec = (raw & 0x7F) + 1;
+    let sgnd = (raw & 0x80) != 0;
+    (prec, sgnd)
 }
 
 /// Read a JP2 box header (8 bytes: length + type) from the stream.
@@ -609,7 +622,7 @@ mod tests {
         let mut file = Vec::new();
         file.extend_from_slice(&build_jp_box());
         file.extend_from_slice(&build_ftyp_box());
-        file.extend_from_slice(&build_jp2h_box(8, 8, 1, 8, 17)); // 8x8 gray
+        file.extend_from_slice(&build_jp2h_box(8, 8, 1, 0x07, 17)); // 8x8 gray, 8-bit
         file.extend_from_slice(&build_jp2c_box(&build_minimal_j2k(8, 8, 1)));
         file
     }
@@ -736,7 +749,7 @@ mod tests {
             d.extend_from_slice(&100u32.to_be_bytes()); // HEIGHT
             d.extend_from_slice(&200u32.to_be_bytes()); // WIDTH
             d.extend_from_slice(&3u16.to_be_bytes()); // NC
-            d.push(8); // BPC
+            d.push(0x07); // BPC: 8-bit unsigned (raw encoding: (prec-1) | sign<<7)
             d.push(7); // C
             d.push(0); // UnkC
             d.push(0); // IPR
@@ -746,13 +759,14 @@ mod tests {
         assert_eq!(dec.height, 100);
         assert_eq!(dec.width, 200);
         assert_eq!(dec.numcomps, 3);
-        assert_eq!(dec.bpc, 8);
+        assert_eq!(dec.bpc, 0x07);
         assert_eq!(dec.compression_type, 7);
         assert!(dec.ihdr_found);
         assert_eq!(dec.comp_info.len(), 3);
-        // Uniform BPC: all comp_info should have bpcc=8
+        // Uniform BPC 0x07 decodes to 8-bit unsigned
         for ci in &dec.comp_info {
-            assert_eq!(ci.bpcc, 8);
+            assert_eq!(ci.prec, 8);
+            assert!(!ci.sgnd);
         }
     }
 
@@ -777,7 +791,7 @@ mod tests {
         data.extend_from_slice(&100u32.to_be_bytes()); // HEIGHT
         data.extend_from_slice(&200u32.to_be_bytes()); // WIDTH
         data.extend_from_slice(&3u16.to_be_bytes()); // NC
-        data.push(8); // BPC
+        data.push(0x07); // BPC
         data.push(5); // C = 5 (not 7)
         data.push(0); // UnkC
         data.push(0); // IPR
@@ -853,12 +867,15 @@ mod tests {
         ihdr.push(0);
         dec.read_ihdr(&ihdr).unwrap();
 
-        // Now read BPCC
-        let bpcc_data = vec![8, 10, 12]; // 3 components: 8, 10, 12 bits
+        // Now read BPCC (raw values: 0x07=8bit unsigned, 0x89=10bit signed, 0x0B=12bit unsigned)
+        let bpcc_data = vec![0x07, 0x89, 0x0B];
         dec.read_bpcc(&bpcc_data).unwrap();
-        assert_eq!(dec.comp_info[0].bpcc, 8);
-        assert_eq!(dec.comp_info[1].bpcc, 10);
-        assert_eq!(dec.comp_info[2].bpcc, 12);
+        assert_eq!(dec.comp_info[0].prec, 8);
+        assert!(!dec.comp_info[0].sgnd);
+        assert_eq!(dec.comp_info[1].prec, 10);
+        assert!(dec.comp_info[1].sgnd);
+        assert_eq!(dec.comp_info[2].prec, 12);
+        assert!(!dec.comp_info[2].sgnd);
     }
 
     #[test]
@@ -894,7 +911,7 @@ mod tests {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::FileType;
 
-        let ihdr = build_ihdr_box(8, 8, 1, 8);
+        let ihdr = build_ihdr_box(8, 8, 1, 0x07);
         let colr = build_colr_enumcs_box(17); // gray
         let mut payload = Vec::new();
         payload.extend_from_slice(&ihdr);
@@ -944,7 +961,7 @@ mod tests {
         assert_eq!(dec.width, 8);
         assert_eq!(dec.height, 8);
         assert_eq!(dec.numcomps, 1);
-        assert_eq!(dec.bpc, 8);
+        assert_eq!(dec.bpc, 0x07);
         assert!(dec.ihdr_found);
         assert!(dec.colr_found);
     }
@@ -982,7 +999,7 @@ mod tests {
         let mut file = Vec::new();
         file.extend_from_slice(&build_jp_box());
         file.extend_from_slice(&build_ftyp_box());
-        file.extend_from_slice(&build_jp2h_box(8, 8, 3, 8, 16)); // sRGB
+        file.extend_from_slice(&build_jp2h_box(8, 8, 3, 0x07, 16)); // sRGB, 8-bit
         file.extend_from_slice(&build_jp2c_box(&build_minimal_j2k(8, 8, 3)));
 
         let mut stream = MemoryStream::new_input(file);
