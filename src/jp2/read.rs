@@ -243,6 +243,13 @@ impl Jp2Decoder {
         self.compression_type = data[11];
         // data[12] = UnkC, data[13] = IPR — not needed for basic decoding
 
+        if self.compression_type != 7 {
+            return Err(Error::InvalidInput(format!(
+                "IHDR: unsupported compression type {} (expected 7)",
+                self.compression_type
+            )));
+        }
+
         if self.height == 0 || self.width == 0 || self.numcomps == 0 {
             return Err(Error::InvalidInput(format!(
                 "IHDR: invalid dimensions {}x{} with {} components",
@@ -721,6 +728,20 @@ mod tests {
         data.push(7);
         data.push(0);
         data.push(0);
+        assert!(dec.read_ihdr(&data).is_err());
+    }
+
+    #[test]
+    fn read_ihdr_bad_compression_type_fails() {
+        let mut dec = Jp2Decoder::new();
+        let mut data = Vec::new();
+        data.extend_from_slice(&100u32.to_be_bytes()); // HEIGHT
+        data.extend_from_slice(&200u32.to_be_bytes()); // WIDTH
+        data.extend_from_slice(&3u16.to_be_bytes()); // NC
+        data.push(8); // BPC
+        data.push(5); // C = 5 (not 7)
+        data.push(0); // UnkC
+        data.push(0); // IPR
         assert!(dec.read_ihdr(&data).is_err());
     }
 
