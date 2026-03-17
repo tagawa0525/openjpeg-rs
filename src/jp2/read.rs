@@ -82,7 +82,6 @@ impl Jp2Decoder {
                 return Ok(());
             }
 
-            // Read box payload
             let payload_len = (box_hdr.length - box_hdr.header_len) as usize;
             if payload_len > stream.bytes_left() {
                 return Err(Error::InvalidInput(format!(
@@ -90,17 +89,23 @@ impl Jp2Decoder {
                     payload_len
                 )));
             }
-            let mut payload = vec![0u8; payload_len];
-            if payload_len > 0 && stream.read(&mut payload)? < payload_len {
-                return Err(Error::EndOfStream);
-            }
 
             match box_hdr.box_type {
-                JP2_JP => self.read_jp(&payload)?,
-                JP2_FTYP => self.read_ftyp(&payload)?,
-                JP2_JP2H => self.read_jp2h(&payload)?,
+                JP2_JP | JP2_FTYP | JP2_JP2H => {
+                    let mut payload = vec![0u8; payload_len];
+                    if payload_len > 0 && stream.read(&mut payload)? < payload_len {
+                        return Err(Error::EndOfStream);
+                    }
+                    match box_hdr.box_type {
+                        JP2_JP => self.read_jp(&payload)?,
+                        JP2_FTYP => self.read_ftyp(&payload)?,
+                        JP2_JP2H => self.read_jp2h(&payload)?,
+                        _ => unreachable!(),
+                    }
+                }
                 _ => {
-                    // Skip unknown boxes
+                    // Skip unknown boxes without allocating payload
+                    stream.skip(payload_len as i64)?;
                 }
             }
         }
