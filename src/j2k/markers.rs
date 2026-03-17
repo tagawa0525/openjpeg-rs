@@ -418,6 +418,196 @@ pub fn read_com(data: &[u8]) -> Result<(u16, Vec<u8>)> {
 }
 
 // ---------------------------------------------------------------------------
+// COC marker (Coding style component)
+// ---------------------------------------------------------------------------
+
+/// Parse COC marker data (C: opj_j2k_read_coc).
+///
+/// COC is like COD but applies to a single component.
+pub fn read_coc(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> Result<()> {
+    let comp_room = if numcomps <= 256 { 1 } else { 2 };
+    if data.len() < comp_room + 1 {
+        return Err(Error::InvalidInput("COC marker too short".into()));
+    }
+
+    let mut pos = 0;
+    let compno = if comp_room == 2 {
+        let v = read_bytes_be(&data[pos..], 2);
+        pos += 2;
+        v
+    } else {
+        let v = data[pos] as u32;
+        pos += 1;
+        v
+    };
+
+    if compno >= numcomps {
+        return Err(Error::InvalidInput(format!(
+            "COC: component {compno} >= numcomps {numcomps}"
+        )));
+    }
+
+    let scoc = data[pos] as u32;
+    pos += 1;
+
+    if tcp.tccps.len() <= compno as usize {
+        tcp.tccps
+            .resize(compno as usize + 1, TileCompCodingParameters::default());
+    }
+
+    read_spcod_spcoc(&data[pos..], &mut tcp.tccps[compno as usize], scoc)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// QCC marker (Quantization component)
+// ---------------------------------------------------------------------------
+
+/// Parse QCC marker data (C: opj_j2k_read_qcc).
+///
+/// QCC is like QCD but applies to a single component.
+pub fn read_qcc(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> Result<()> {
+    let comp_room = if numcomps <= 256 { 1 } else { 2 };
+    if data.len() < comp_room {
+        return Err(Error::InvalidInput("QCC marker too short".into()));
+    }
+
+    let mut pos = 0;
+    let compno = if comp_room == 2 {
+        let v = read_bytes_be(&data[pos..], 2);
+        pos += 2;
+        v
+    } else {
+        let v = data[pos] as u32;
+        pos += 1;
+        v
+    };
+
+    if compno >= numcomps {
+        return Err(Error::InvalidInput(format!(
+            "QCC: component {compno} >= numcomps {numcomps}"
+        )));
+    }
+
+    if tcp.tccps.len() <= compno as usize {
+        tcp.tccps
+            .resize(compno as usize + 1, TileCompCodingParameters::default());
+    }
+
+    read_sqcd_sqcc(&data[pos..], &mut tcp.tccps[compno as usize])?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// POC marker (Progression order change)
+// ---------------------------------------------------------------------------
+
+/// Parse POC marker data (C: opj_j2k_read_poc).
+pub fn read_poc(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> Result<()> {
+    let comp_room = if numcomps <= 256 { 1usize } else { 2 };
+    let entry_size = 5 + 2 * comp_room; // RSpoc(1) + CSpoc(comp_room) + LYEpoc(2) + REpoc(1) + CEpoc(comp_room) + Ppoc(1)
+
+    if data.is_empty() || !data.len().is_multiple_of(entry_size) {
+        return Err(Error::InvalidInput("POC marker invalid length".into()));
+    }
+
+    let num_pocs = (data.len() / entry_size).min(tcp.pocs.len());
+    let mut pos = 0;
+
+    for i in 0..num_pocs {
+        let poc = &mut tcp.pocs[i];
+
+        poc.resno0 = data[pos] as u32;
+        pos += 1;
+
+        poc.compno0 = if comp_room == 2 {
+            let v = read_bytes_be(&data[pos..], 2);
+            pos += 2;
+            v
+        } else {
+            let v = data[pos] as u32;
+            pos += 1;
+            v
+        };
+
+        poc.layno1 = read_bytes_be(&data[pos..], 2);
+        pos += 2;
+
+        poc.resno1 = data[pos] as u32;
+        pos += 1;
+
+        poc.compno1 = if comp_room == 2 {
+            let v = read_bytes_be(&data[pos..], 2);
+            pos += 2;
+            v
+        } else {
+            let v = data[pos] as u32;
+            pos += 1;
+            v
+        };
+
+        let prg_byte = data[pos];
+        pos += 1;
+        poc.prg = match prg_byte {
+            0 => ProgressionOrder::Lrcp,
+            1 => ProgressionOrder::Rlcp,
+            2 => ProgressionOrder::Rpcl,
+            3 => ProgressionOrder::Pcrl,
+            4 => ProgressionOrder::Cprl,
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "POC: invalid progression order: {prg_byte}"
+                )));
+            }
+        };
+    }
+
+    tcp.numpocs = num_pocs as u32;
+    tcp.poc = true;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// RGN marker (Region of interest)
+// ---------------------------------------------------------------------------
+
+/// Parse RGN marker data (C: opj_j2k_read_rgn).
+pub fn read_rgn(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> Result<()> {
+    let comp_room = if numcomps <= 256 { 1 } else { 2 };
+    if data.len() < comp_room + 2 {
+        return Err(Error::InvalidInput("RGN marker too short".into()));
+    }
+
+    let mut pos = 0;
+    let compno = if comp_room == 2 {
+        let v = read_bytes_be(&data[pos..], 2);
+        pos += 2;
+        v
+    } else {
+        let v = data[pos] as u32;
+        pos += 1;
+        v
+    };
+
+    if compno >= numcomps {
+        return Err(Error::InvalidInput(format!(
+            "RGN: component {compno} >= numcomps {numcomps}"
+        )));
+    }
+
+    let _srgn = data[pos]; // ROI style (always 0 = implicit)
+    pos += 1;
+    let roi_shift = data[pos] as i32;
+
+    if tcp.tccps.len() <= compno as usize {
+        tcp.tccps
+            .resize(compno as usize + 1, TileCompCodingParameters::default());
+    }
+    tcp.tccps[compno as usize].roishift = roi_shift;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Marker WRITING functions
 // ---------------------------------------------------------------------------
 
@@ -610,6 +800,7 @@ pub fn write_eoc(out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::COMP_PARAM_DEFAULT_NUMRESOLUTION;
 
     // --- SIZ ---
 
@@ -814,5 +1005,112 @@ mod tests {
         let (rcom, comment) = read_com(&data).unwrap();
         assert_eq!(rcom, 1);
         assert_eq!(comment, b"hello");
+    }
+
+    // --- COC ---
+
+    #[test]
+    fn coc_applies_to_single_component() {
+        let mut tcp = TileCodingParameters {
+            tccps: vec![
+                TileCompCodingParameters::default(),
+                TileCompCodingParameters::default(),
+            ],
+            ..Default::default()
+        };
+        // COC for component 1
+        let data = vec![
+            0x01, // Ccoc = component 1
+            0x00, // Scoc = no precincts
+            0x02, // NumDecomp=2 → 3 resolutions
+            0x03, // cblkw=5
+            0x03, // cblkh=5
+            0x00, // cblksty
+            0x00, // qmfbid=0 (9-7 irreversible)
+        ];
+
+        read_coc(&data, &mut tcp, 2).unwrap();
+
+        // Component 1 changed
+        assert_eq!(tcp.tccps[1].numresolutions, 3);
+        assert_eq!(tcp.tccps[1].cblkw, 5);
+        assert_eq!(tcp.tccps[1].qmfbid, 0);
+        // Component 0 unchanged
+        assert_eq!(
+            tcp.tccps[0].numresolutions,
+            COMP_PARAM_DEFAULT_NUMRESOLUTION
+        );
+    }
+
+    // --- QCC ---
+
+    #[test]
+    fn qcc_applies_to_single_component() {
+        let mut tcp = TileCodingParameters {
+            tccps: vec![
+                TileCompCodingParameters::default(),
+                TileCompCodingParameters::default(),
+            ],
+            ..Default::default()
+        };
+        // QCC for component 0: NOQNT
+        let data = vec![
+            0x00, // Cqcc = component 0
+            0x40, // Sqcx: NOQNT, numgbits=2
+            0x50, // band 0: expn=10
+        ];
+
+        read_qcc(&data, &mut tcp, 2).unwrap();
+
+        assert_eq!(tcp.tccps[0].qntsty, J2K_CCP_QNTSTY_NOQNT);
+        assert_eq!(tcp.tccps[0].stepsizes[0].expn, 10);
+        // Component 1 unchanged
+        assert_eq!(tcp.tccps[1].qntsty, 0);
+    }
+
+    // --- POC ---
+
+    #[test]
+    fn poc_parsing() {
+        // 1 POC entry, numcomps <= 256 (comp_room=1)
+        // Entry size = 5 + 2*1 = 7 bytes
+        let data = vec![
+            0x00, // RSpoc = 0
+            0x00, // CSpoc = 0
+            0x00, 0x03, // LYEpoc = 3
+            0x02, // REpoc = 2
+            0x01, // CEpoc = 1
+            0x01, // Ppoc = RLCP
+        ];
+
+        let mut tcp = TileCodingParameters::default();
+        read_poc(&data, &mut tcp, 1).unwrap();
+
+        assert_eq!(tcp.numpocs, 1);
+        assert!(tcp.poc);
+        assert_eq!(tcp.pocs[0].resno0, 0);
+        assert_eq!(tcp.pocs[0].compno0, 0);
+        assert_eq!(tcp.pocs[0].layno1, 3);
+        assert_eq!(tcp.pocs[0].resno1, 2);
+        assert_eq!(tcp.pocs[0].compno1, 1);
+        assert_eq!(tcp.pocs[0].prg, ProgressionOrder::Rlcp);
+    }
+
+    // --- RGN ---
+
+    #[test]
+    fn rgn_sets_roi_shift() {
+        let mut tcp = TileCodingParameters {
+            tccps: vec![TileCompCodingParameters::default()],
+            ..Default::default()
+        };
+        let data = vec![
+            0x00, // Crgn = component 0
+            0x00, // Srgn = 0 (implicit ROI style)
+            0x0D, // SPrgn = 13 (ROI shift)
+        ];
+
+        read_rgn(&data, &mut tcp, 1).unwrap();
+        assert_eq!(tcp.tccps[0].roishift, 13);
     }
 }

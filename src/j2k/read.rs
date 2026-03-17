@@ -6,7 +6,9 @@
 use crate::error::{Error, Result};
 use crate::image::Image;
 use crate::io::cio::{MemoryStream, read_bytes_be};
-use crate::j2k::markers::{read_cod, read_com, read_qcd, read_siz, read_sot};
+use crate::j2k::markers::{
+    read_coc, read_cod, read_com, read_poc, read_qcc, read_qcd, read_rgn, read_siz, read_sot,
+};
 use crate::j2k::params::{CodingParameters, TileCodingParameters};
 use crate::j2k::{J2kState, Marker};
 use crate::types::ColorSpace;
@@ -154,11 +156,27 @@ impl J2kDecoder {
                     read_qcd(&payload, &mut self.default_tcp, numcomps)?;
                     self.qcd_found = true;
                 }
+                Marker::Coc => {
+                    let numcomps = self.image.comps.len() as u32;
+                    read_coc(&payload, &mut self.default_tcp, numcomps)?;
+                }
+                Marker::Qcc => {
+                    let numcomps = self.image.comps.len() as u32;
+                    read_qcc(&payload, &mut self.default_tcp, numcomps)?;
+                }
+                Marker::Poc => {
+                    let numcomps = self.image.comps.len() as u32;
+                    read_poc(&payload, &mut self.default_tcp, numcomps)?;
+                }
+                Marker::Rgn => {
+                    let numcomps = self.image.comps.len() as u32;
+                    read_rgn(&payload, &mut self.default_tcp, numcomps)?;
+                }
                 Marker::Com => {
                     let _ = read_com(&payload)?;
                 }
                 _ => {
-                    // Skip unknown markers
+                    // Skip unknown/unsupported markers (TLM, PLT, PPM, etc.)
                 }
             }
         }
