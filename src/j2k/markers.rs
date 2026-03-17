@@ -81,9 +81,14 @@ pub fn read_siz(data: &[u8], image: &mut Image, cp: &mut CodingParameters) -> Re
     cp.tdx = tdx;
     cp.tdy = tdy;
 
-    // Compute tile grid
-    cp.tw = ((x1 - tx0).div_ceil(tdx)).max(1);
-    cp.th = ((y1 - ty0).div_ceil(tdy)).max(1);
+    // Compute tile grid (validate tx0/ty0 within image bounds)
+    if tx0 > x1 || ty0 > y1 {
+        return Err(Error::InvalidInput(
+            "SIZ: tile origin beyond image extent".into(),
+        ));
+    }
+    cp.tw = (x1 - tx0).div_ceil(tdx).max(1);
+    cp.th = (y1 - ty0).div_ceil(tdy).max(1);
 
     // Parse components
     image.comps.clear();
@@ -102,17 +107,21 @@ pub fn read_siz(data: &[u8], image: &mut Image, cp: &mut CodingParameters) -> Re
         let prec = (ssiz & 0x7F) as u32 + 1;
         let sgnd = (ssiz >> 7) != 0;
 
-        // Compute component dimensions
-        let w = (x1 - x0).div_ceil(dx);
-        let h = (y1 - y0).div_ceil(dy);
+        // Compute component dimensions from ceil-divided endpoints
+        let comp_x0 = x0.div_ceil(dx);
+        let comp_y0 = y0.div_ceil(dy);
+        let comp_x1 = x1.div_ceil(dx);
+        let comp_y1 = y1.div_ceil(dy);
+        let w = comp_x1 - comp_x0;
+        let h = comp_y1 - comp_y0;
 
         image.comps.push(ImageComp {
             dx,
             dy,
             w,
             h,
-            x0: x0.div_ceil(dx),
-            y0: y0.div_ceil(dy),
+            x0: comp_x0,
+            y0: comp_y0,
             prec,
             sgnd,
             resno_decoded: 0,
