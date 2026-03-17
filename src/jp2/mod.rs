@@ -3,6 +3,7 @@
 // Box constants, JP2 types, and sub-module declarations.
 
 pub mod read;
+pub mod write;
 
 // ---------------------------------------------------------------------------
 // Box type constants (C: JP2_*)
