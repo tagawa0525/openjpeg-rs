@@ -511,13 +511,10 @@ pub fn read_poc(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> R
         return Err(Error::InvalidInput("POC marker invalid length".into()));
     }
 
-    let num_pocs = data.len() / entry_size;
+    let num_pocs = (data.len() / entry_size).min(tcp.pocs.len());
     let mut pos = 0;
 
     for i in 0..num_pocs {
-        if i >= tcp.pocs.len() {
-            break;
-        }
         let poc = &mut tcp.pocs[i];
 
         poc.resno0 = data[pos] as u32;
@@ -577,7 +574,7 @@ pub fn read_poc(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> R
 /// Parse RGN marker data (C: opj_j2k_read_rgn).
 pub fn read_rgn(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> Result<()> {
     let comp_room = if numcomps <= 256 { 1 } else { 2 };
-    if data.len() < comp_room + 1 {
+    if data.len() < comp_room + 2 {
         return Err(Error::InvalidInput("RGN marker too short".into()));
     }
 
@@ -598,6 +595,8 @@ pub fn read_rgn(data: &[u8], tcp: &mut TileCodingParameters, numcomps: u32) -> R
         )));
     }
 
+    let _srgn = data[pos]; // ROI style (always 0 = implicit)
+    pos += 1;
     let roi_shift = data[pos] as i32;
 
     if tcp.tccps.len() <= compno as usize {
@@ -1107,7 +1106,8 @@ mod tests {
         };
         let data = vec![
             0x00, // Crgn = component 0
-            0x0D, // Srgn = 13 (ROI shift)
+            0x00, // Srgn = 0 (implicit ROI style)
+            0x0D, // SPrgn = 13 (ROI shift)
         ];
 
         read_rgn(&data, &mut tcp, 1).unwrap();
