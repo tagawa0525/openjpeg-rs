@@ -124,6 +124,13 @@ impl J2kDecoder {
             }
             let payload_len = seg_len - 2;
 
+            // Validate against available data to prevent OOM on malformed input
+            if payload_len > stream.bytes_left() {
+                return Err(Error::InvalidInput(format!(
+                    "Marker segment length {seg_len} exceeds available data"
+                )));
+            }
+
             // Read marker payload
             let mut payload = vec![0u8; payload_len];
             if payload_len > 0 && stream.read(&mut payload)? < payload_len {
@@ -209,14 +216,22 @@ impl J2kDecoder {
         self.current_tile_no = sot.tile_no;
         self.state = J2kState::Tph;
 
+        let psot_known = sot.psot != 0;
         // Compute tile data length
         // Psot includes the entire SOT segment (12 bytes) + tile header markers + SOD + tile data
         // After reading SOT (12 bytes), remaining = Psot - 12
-        let remaining_in_tile_part = if sot.psot == 0 {
-            // Last tile-part: read until EOC or end of stream
-            stream.bytes_left()
+        let remaining_in_tile_part = if psot_known {
+            let r = (sot.psot as usize).saturating_sub(12);
+            if r > stream.bytes_left() {
+                return Err(Error::InvalidInput(format!(
+                    "SOT Psot {} exceeds available data",
+                    sot.psot
+                )));
+            }
+            r
         } else {
-            (sot.psot as usize).saturating_sub(12)
+            // Psot=0: last tile-part. Reserve 2 bytes for potential EOC marker.
+            stream.bytes_left().saturating_sub(2)
         };
 
         // Skip tile-part header markers until SOD
@@ -248,16 +263,24 @@ impl J2kDecoder {
                 return Err(Error::InvalidInput("Invalid tile marker length".into()));
             }
             let skip = mlen - 2;
+            if header_consumed + skip > remaining_in_tile_part {
+                return Err(Error::InvalidInput(
+                    "Tile marker extends beyond tile-part boundary".into(),
+                ));
+            }
             stream.skip(skip as i64)?;
             header_consumed += skip;
         }
 
         // Read tile data (compressed packets)
-        let data_len = remaining_in_tile_part - header_consumed;
+        let data_len = remaining_in_tile_part.saturating_sub(header_consumed);
         let mut tile_bytes = vec![0u8; data_len];
         if data_len > 0 {
-            let read = stream.read(&mut tile_bytes)?;
-            tile_bytes.truncate(read);
+            let bytes_read = stream.read(&mut tile_bytes)?;
+            if psot_known && bytes_read < data_len {
+                return Err(Error::EndOfStream);
+            }
+            tile_bytes.truncate(bytes_read);
         }
 
         // Store/append tile data
