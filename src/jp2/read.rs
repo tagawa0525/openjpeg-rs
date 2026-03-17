@@ -676,8 +676,8 @@ impl Jp2Decoder {
                 }
                 let mut comp = src.clone();
                 comp.data = data;
-                comp.prec = pclr.channel_size[ch.min(pclr.channel_size.len() - 1)] as u32;
-                comp.sgnd = pclr.channel_sign[ch.min(pclr.channel_sign.len() - 1)];
+                comp.prec = pclr.channel_size[pcol] as u32;
+                comp.sgnd = pclr.channel_sign[pcol];
                 new_comps.push(comp);
             }
         }
