@@ -218,6 +218,9 @@ impl Jp2Decoder {
         if !has_ihdr {
             return Err(Error::InvalidInput("JP2H: missing IHDR box".into()));
         }
+        if !self.colr_found {
+            return Err(Error::InvalidInput("JP2H: missing COLR box".into()));
+        }
 
         self.state = Jp2State::Header;
         Ok(())
@@ -867,6 +870,16 @@ mod tests {
         assert_eq!(dec.height, 8);
         assert_eq!(dec.numcomps, 1);
         assert!(dec.colr_found);
+    }
+
+    #[test]
+    fn read_jp2h_missing_colr_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::FileType;
+
+        // JP2H with only IHDR, no COLR
+        let ihdr = build_ihdr_box(8, 8, 1, 0x07);
+        assert!(dec.read_jp2h(&ihdr).is_err());
     }
 
     #[test]
