@@ -185,16 +185,47 @@ impl Jp2Decoder {
             if offset + 8 > data.len() {
                 return Err(Error::InvalidInput("JP2H: truncated sub-box header".into()));
             }
-            let sub_len = read_bytes_be(&data[offset..], 4);
+            let sub_lbox = read_bytes_be(&data[offset..], 4);
             let sub_type = read_bytes_be(&data[offset + 4..], 4);
 
-            if sub_len < 8 || (offset + sub_len as usize) > data.len() {
+            let (sub_hdr_len, sub_len): (usize, usize) = if sub_lbox == 1 {
+                // Extended length
+                if offset + 16 > data.len() {
+                    return Err(Error::InvalidInput(
+                        "JP2H: truncated extended-length sub-box header".into(),
+                    ));
+                }
+                let xl_high = read_bytes_be(&data[offset + 8..], 4);
+                if xl_high != 0 {
+                    return Err(Error::InvalidInput("JP2H: sub-box size exceeds 4GB".into()));
+                }
+                let xl_low = read_bytes_be(&data[offset + 12..], 4) as usize;
+                if xl_low < 16 {
+                    return Err(Error::InvalidInput(format!(
+                        "JP2H: invalid extended sub-box length {xl_low}"
+                    )));
+                }
+                (16, xl_low)
+            } else if sub_lbox == 0 {
+                // Last sub-box: extends to end of JP2H payload
+                (8, data.len() - offset)
+            } else {
+                let len = sub_lbox as usize;
+                if len < 8 {
+                    return Err(Error::InvalidInput(format!(
+                        "JP2H: invalid sub-box length {len}"
+                    )));
+                }
+                (8, len)
+            };
+
+            if offset + sub_len > data.len() {
                 return Err(Error::InvalidInput(format!(
-                    "JP2H: invalid sub-box length {sub_len}"
+                    "JP2H: sub-box length {sub_len} exceeds available data"
                 )));
             }
 
-            let sub_payload = &data[offset + 8..offset + sub_len as usize];
+            let sub_payload = &data[offset + sub_hdr_len..offset + sub_len];
 
             match sub_type {
                 JP2_IHDR => {
@@ -212,7 +243,7 @@ impl Jp2Decoder {
                 }
             }
 
-            offset += sub_len as usize;
+            offset += sub_len;
         }
 
         if !has_ihdr {
