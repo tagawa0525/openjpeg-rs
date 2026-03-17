@@ -3,6 +3,7 @@ pub mod error;
 pub mod image;
 pub mod io;
 pub mod j2k;
+pub mod jp2;
 pub mod tcd;
 pub mod tier2;
 pub mod transform;
