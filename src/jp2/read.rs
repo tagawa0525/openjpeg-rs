@@ -551,6 +551,23 @@ impl Jp2Decoder {
             let cmp = read_bytes_be(&data[off..], 2) as u16;
             let mtyp = data[off + 2];
             let pcol = data[off + 3];
+            if mtyp > 1 {
+                return Err(Error::InvalidInput(format!(
+                    "CMAP[{i}]: invalid MTYP {mtyp} (must be 0 or 1)"
+                )));
+            }
+            if mtyp == 1 && pcol >= pclr.nr_channels {
+                return Err(Error::InvalidInput(format!(
+                    "CMAP[{i}]: PCOL {pcol} >= palette channels {}",
+                    pclr.nr_channels
+                )));
+            }
+            if cmp as u32 >= self.numcomps {
+                return Err(Error::InvalidInput(format!(
+                    "CMAP[{i}]: CMP {cmp} >= image components {}",
+                    self.numcomps
+                )));
+            }
             entries.push(CmapEntry { cmp, mtyp, pcol });
         }
         self.cmap = Some(entries);
