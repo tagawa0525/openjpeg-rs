@@ -4,6 +4,7 @@
 
 pub mod markers;
 pub mod params;
+pub mod read;
 
 // ---------------------------------------------------------------------------
 // Marker constants (C: J2K_MS_*)

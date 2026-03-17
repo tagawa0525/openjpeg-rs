@@ -361,6 +361,49 @@ pub fn read_sqcd_sqcc(data: &[u8], tccp: &mut TileCompCodingParameters) -> Resul
 }
 
 // ---------------------------------------------------------------------------
+// SOT marker (Start of tile-part)
+// ---------------------------------------------------------------------------
+
+/// Parsed SOT marker values.
+#[derive(Debug, Clone, Copy)]
+pub struct SotValues {
+    /// Tile index (0 to tw*th-1).
+    pub tile_no: u32,
+    /// Total tile-part length in bytes (0 = unknown/last).
+    pub psot: u32,
+    /// Tile-part index for this tile (0-based).
+    pub tp_idx: u32,
+    /// Total tile-parts for this tile (0 = unknown).
+    pub nb_parts: u32,
+}
+
+/// Parse SOT marker data (C: opj_j2k_get_sot_values).
+///
+/// `data` is the 8-byte payload after the 2-byte Lsot field.
+pub fn read_sot(data: &[u8]) -> Result<SotValues> {
+    if data.len() < 8 {
+        return Err(Error::InvalidInput("SOT marker too short".into()));
+    }
+    let tile_no = read_bytes_be(data, 2);
+    let psot = read_bytes_be(&data[2..], 4);
+    let tp_idx = data[6] as u32;
+    let nb_parts = data[7] as u32;
+
+    if psot != 0 && psot < 14 {
+        return Err(Error::InvalidInput(format!(
+            "SOT: invalid Psot value: {psot} (minimum is 14)"
+        )));
+    }
+
+    Ok(SotValues {
+        tile_no,
+        psot,
+        tp_idx,
+        nb_parts,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // COM marker (Comment)
 // ---------------------------------------------------------------------------
 
