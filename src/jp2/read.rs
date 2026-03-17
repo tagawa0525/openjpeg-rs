@@ -505,10 +505,17 @@ impl Jp2Decoder {
         let mut entries = Vec::with_capacity(nr_entries as usize * nr_channels as usize);
         let mut off = header_len;
         for _ in 0..nr_entries {
-            for &nbytes in &bytes_per_col {
+            for (col_idx, &nbytes) in bytes_per_col.iter().enumerate() {
                 let mut val = 0u32;
                 for b in &data[off..off + nbytes] {
                     val = (val << 8) | *b as u32;
+                }
+                // Sign-extend if column is signed
+                if channel_sign[col_idx] {
+                    let prec = channel_size[col_idx] as u32;
+                    if prec < 32 && (val & (1 << (prec - 1))) != 0 {
+                        val |= !((1u32 << prec) - 1);
+                    }
                 }
                 entries.push(val);
                 off += nbytes;
