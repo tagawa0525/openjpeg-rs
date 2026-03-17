@@ -102,6 +102,55 @@ pub struct Jp2CompInfo {
     pub sgnd: bool,
 }
 
+// ---------------------------------------------------------------------------
+// CDEF (Channel Definition) box types (C: opj_jp2_cdef_info_t)
+// ---------------------------------------------------------------------------
+
+/// Channel definition entry from the CDEF box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CdefEntry {
+    /// Channel index.
+    pub cn: u16,
+    /// Channel type (0 = colour, 1 = opacity, 2 = premultiplied opacity).
+    pub typ: u16,
+    /// Colour component association (1-based; 0 or 65535 = no association).
+    pub asoc: u16,
+}
+
+// ---------------------------------------------------------------------------
+// PCLR (Palette) box types (C: opj_jp2_pclr_t)
+// ---------------------------------------------------------------------------
+
+/// Palette data from the PCLR box.
+#[derive(Debug, Clone)]
+pub struct Pclr {
+    /// Palette entries: `entries[entry_idx * nr_channels + col]`.
+    pub entries: Vec<u32>,
+    /// Per-column signedness.
+    pub channel_sign: Vec<bool>,
+    /// Per-column bit depth (decoded: actual precision).
+    pub channel_size: Vec<u8>,
+    /// Number of palette entries.
+    pub nr_entries: u16,
+    /// Number of palette columns.
+    pub nr_channels: u8,
+}
+
+// ---------------------------------------------------------------------------
+// CMAP (Component Mapping) box types (C: opj_jp2_cmap_comp_t)
+// ---------------------------------------------------------------------------
+
+/// Component mapping entry from the CMAP box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CmapEntry {
+    /// Source component index in the decoded J2K image.
+    pub cmp: u16,
+    /// Mapping type (0 = direct use, 1 = palette mapping).
+    pub mtyp: u8,
+    /// Palette column index.
+    pub pcol: u8,
+}
+
 /// JP2 box header (C: opj_jp2_box_t).
 #[derive(Debug, Clone, Copy)]
 pub struct Jp2Box {

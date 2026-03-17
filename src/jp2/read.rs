@@ -7,8 +7,9 @@ use crate::error::{Error, Result};
 use crate::io::cio::{MemoryStream, read_bytes_be};
 use crate::j2k::read::J2kDecoder;
 use crate::jp2::{
-    ColourMethod, JP2_BPCC, JP2_COLR, JP2_FTYP, JP2_IHDR, JP2_JP, JP2_JP2_BRAND, JP2_JP2C,
-    JP2_JP2H, JP2_MAGIC, Jp2Box, Jp2Colour, Jp2CompInfo, Jp2State,
+    CdefEntry, CmapEntry, ColourMethod, JP2_BPCC, JP2_CDEF, JP2_CMAP, JP2_COLR, JP2_FTYP, JP2_IHDR,
+    JP2_JP, JP2_JP2_BRAND, JP2_JP2C, JP2_JP2H, JP2_MAGIC, JP2_PCLR, Jp2Box, Jp2Colour, Jp2CompInfo,
+    Jp2State, Pclr,
 };
 use crate::types::ColorSpace;
 
@@ -32,6 +33,12 @@ pub struct Jp2Decoder {
     pub colour: Jp2Colour,
     /// Per-component bit depth info.
     pub comp_info: Vec<Jp2CompInfo>,
+    /// Channel definition entries (from CDEF box).
+    pub cdef: Option<Vec<CdefEntry>>,
+    /// Palette data (from PCLR box).
+    pub pclr: Option<Pclr>,
+    /// Component mapping entries (from CMAP box).
+    pub cmap: Option<Vec<CmapEntry>>,
     /// Whether IHDR was found.
     ihdr_found: bool,
     /// Whether COLR was found.
@@ -57,6 +64,9 @@ impl Jp2Decoder {
             compression_type: 0,
             colour: Jp2Colour::default(),
             comp_info: Vec::new(),
+            cdef: None,
+            pclr: None,
+            cmap: None,
             ihdr_found: false,
             colr_found: false,
         }
@@ -243,8 +253,17 @@ impl Jp2Decoder {
                 JP2_BPCC => {
                     self.read_bpcc(sub_payload)?;
                 }
+                JP2_CDEF => {
+                    self.read_cdef(sub_payload)?;
+                }
+                JP2_PCLR => {
+                    self.read_pclr(sub_payload)?;
+                }
+                JP2_CMAP => {
+                    self.read_cmap(sub_payload)?;
+                }
                 _ => {
-                    // Skip unknown sub-boxes (CDEF, CMAP, PCLR handled in 600b)
+                    // Skip unknown sub-boxes
                 }
             }
 
@@ -395,6 +414,31 @@ impl Jp2Decoder {
         };
         self.j2k.image.color_space = cs;
     }
+
+    /// Read CDEF (Channel Definition) box payload.
+    fn read_cdef(&mut self, _data: &[u8]) -> Result<()> {
+        todo!("Phase 600b: CDEF reading")
+    }
+
+    /// Read PCLR (Palette) box payload.
+    fn read_pclr(&mut self, _data: &[u8]) -> Result<()> {
+        todo!("Phase 600b: PCLR reading")
+    }
+
+    /// Read CMAP (Component Mapping) box payload.
+    fn read_cmap(&mut self, _data: &[u8]) -> Result<()> {
+        todo!("Phase 600b: CMAP reading")
+    }
+
+    /// Apply CDEF channel definitions to the image.
+    pub fn apply_cdef(&mut self) {
+        todo!("Phase 600b: CDEF application")
+    }
+
+    /// Apply PCLR+CMAP palette expansion to the image.
+    pub fn apply_pclr(&mut self) {
+        todo!("Phase 600b: PCLR application")
+    }
 }
 
 /// Decode a raw BPC/BPCC byte into (precision, signed).
@@ -469,6 +513,7 @@ fn read_box_header(stream: &mut MemoryStream) -> Result<Jp2Box> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image::ImageComp;
     use crate::io::cio::MemoryStream;
 
     // -----------------------------------------------------------------------
@@ -1033,5 +1078,659 @@ mod tests {
         let mut dec = Jp2Decoder::new();
         // Don't call read_header first
         assert!(dec.read_codestream(&mut stream).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers: optional box builders
+    // -----------------------------------------------------------------------
+
+    /// Build a CDEF sub-box.
+    fn build_cdef_box(entries: &[(u16, u16, u16)]) -> Vec<u8> {
+        let payload_len = 2 + entries.len() * 6;
+        let total_len = 8 + payload_len;
+        let mut b = Vec::new();
+        b.extend_from_slice(&(total_len as u32).to_be_bytes());
+        b.extend_from_slice(&JP2_CDEF.to_be_bytes());
+        b.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+        for &(cn, typ, asoc) in entries {
+            b.extend_from_slice(&cn.to_be_bytes());
+            b.extend_from_slice(&typ.to_be_bytes());
+            b.extend_from_slice(&asoc.to_be_bytes());
+        }
+        b
+    }
+
+    /// Build a PCLR sub-box.
+    /// `bpc_raw` contains raw bit-depth values per column (same encoding as BPC).
+    /// `entries` is `[entry0_col0, entry0_col1, ..., entry1_col0, ...]`.
+    fn build_pclr_box(
+        nr_entries: u16,
+        nr_channels: u8,
+        bpc_raw: &[u8],
+        entries: &[u32],
+    ) -> Vec<u8> {
+        // Compute bytes per column value
+        let bytes_per: Vec<usize> = bpc_raw
+            .iter()
+            .map(|&b| {
+                let bits = (b & 0x7F) as usize + 1;
+                bits.div_ceil(8)
+            })
+            .collect();
+        let entry_size: usize = bytes_per.iter().sum();
+        let payload_len = 3 + nr_channels as usize + nr_entries as usize * entry_size;
+        let total_len = 8 + payload_len;
+        let mut b = Vec::new();
+        b.extend_from_slice(&(total_len as u32).to_be_bytes());
+        b.extend_from_slice(&JP2_PCLR.to_be_bytes());
+        b.extend_from_slice(&nr_entries.to_be_bytes());
+        b.push(nr_channels);
+        b.extend_from_slice(bpc_raw);
+        for (idx, &val) in entries.iter().enumerate() {
+            let col = idx % nr_channels as usize;
+            let nbytes = bytes_per[col];
+            for i in (0..nbytes).rev() {
+                b.push((val >> (i * 8)) as u8);
+            }
+        }
+        b
+    }
+
+    /// Build a CMAP sub-box.
+    fn build_cmap_box(entries: &[(u16, u8, u8)]) -> Vec<u8> {
+        let payload_len = entries.len() * 4;
+        let total_len = 8 + payload_len;
+        let mut b = Vec::new();
+        b.extend_from_slice(&(total_len as u32).to_be_bytes());
+        b.extend_from_slice(&JP2_CMAP.to_be_bytes());
+        for &(cmp, mtyp, pcol) in entries {
+            b.extend_from_slice(&cmp.to_be_bytes());
+            b.push(mtyp);
+            b.push(pcol);
+        }
+        b
+    }
+
+    /// Build a JP2H box with custom sub-boxes.
+    #[allow(dead_code)]
+    fn build_jp2h_box_custom(sub_boxes: &[&[u8]]) -> Vec<u8> {
+        let content_len: usize = sub_boxes.iter().map(|b| b.len()).sum();
+        let total_len = 8 + content_len;
+        let mut b = Vec::new();
+        b.extend_from_slice(&(total_len as u32).to_be_bytes());
+        b.extend_from_slice(&JP2_JP2H.to_be_bytes());
+        for sub in sub_boxes {
+            b.extend_from_slice(sub);
+        }
+        b
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: CDEF box reading
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cdef_valid_rgb_with_alpha() {
+        let mut dec = Jp2Decoder::new();
+        dec.numcomps = 4;
+        dec.ihdr_found = true;
+        // 4 channels: R(colour,1), G(colour,2), B(colour,3), A(opacity,0)
+        let data = {
+            let mut d = Vec::new();
+            d.extend_from_slice(&4u16.to_be_bytes()); // N=4
+            // cn=0, typ=0(colour), asoc=1(R)
+            d.extend_from_slice(&0u16.to_be_bytes());
+            d.extend_from_slice(&0u16.to_be_bytes());
+            d.extend_from_slice(&1u16.to_be_bytes());
+            // cn=1, typ=0(colour), asoc=2(G)
+            d.extend_from_slice(&1u16.to_be_bytes());
+            d.extend_from_slice(&0u16.to_be_bytes());
+            d.extend_from_slice(&2u16.to_be_bytes());
+            // cn=2, typ=0(colour), asoc=3(B)
+            d.extend_from_slice(&2u16.to_be_bytes());
+            d.extend_from_slice(&0u16.to_be_bytes());
+            d.extend_from_slice(&3u16.to_be_bytes());
+            // cn=3, typ=1(opacity), asoc=0(whole image)
+            d.extend_from_slice(&3u16.to_be_bytes());
+            d.extend_from_slice(&1u16.to_be_bytes());
+            d.extend_from_slice(&0u16.to_be_bytes());
+            d
+        };
+        dec.read_cdef(&data).unwrap();
+        let cdef = dec.cdef.as_ref().unwrap();
+        assert_eq!(cdef.len(), 4);
+        assert_eq!(
+            cdef[0],
+            CdefEntry {
+                cn: 0,
+                typ: 0,
+                asoc: 1
+            }
+        );
+        assert_eq!(
+            cdef[3],
+            CdefEntry {
+                cn: 3,
+                typ: 1,
+                asoc: 0
+            }
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cdef_too_short_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.numcomps = 1;
+        dec.ihdr_found = true;
+        let data = vec![0u8; 1]; // too short: needs at least 2 bytes for N
+        assert!(dec.read_cdef(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cdef_zero_count_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.numcomps = 1;
+        dec.ihdr_found = true;
+        let data = 0u16.to_be_bytes().to_vec(); // N=0
+        assert!(dec.read_cdef(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cdef_truncated_entries_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.numcomps = 2;
+        dec.ihdr_found = true;
+        let mut data = Vec::new();
+        data.extend_from_slice(&2u16.to_be_bytes()); // N=2
+        // Only provide 1 entry (6 bytes) instead of 2
+        data.extend_from_slice(&[0u8; 6]);
+        assert!(dec.read_cdef(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cdef_duplicate_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.numcomps = 1;
+        dec.ihdr_found = true;
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&0u16.to_be_bytes()); // cn
+        data.extend_from_slice(&0u16.to_be_bytes()); // typ
+        data.extend_from_slice(&1u16.to_be_bytes()); // asoc
+        dec.read_cdef(&data).unwrap();
+        // Second CDEF should fail
+        assert!(dec.read_cdef(&data).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: PCLR box reading
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_pclr_valid() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        // 4 entries, 3 columns (RGB), 8-bit each
+        let mut data = Vec::new();
+        data.extend_from_slice(&4u16.to_be_bytes()); // NE=4
+        data.push(3); // NPC=3
+        data.push(0x07); // Bi[0]: 8-bit unsigned
+        data.push(0x07); // Bi[1]: 8-bit unsigned
+        data.push(0x07); // Bi[2]: 8-bit unsigned
+        // 4 entries × 3 columns, each 1 byte
+        let palette = [
+            255, 0, 0, // entry 0: red
+            0, 255, 0, // entry 1: green
+            0, 0, 255, // entry 2: blue
+            255, 255, 255, // entry 3: white
+        ];
+        data.extend_from_slice(&palette);
+
+        dec.read_pclr(&data).unwrap();
+        let pclr = dec.pclr.as_ref().unwrap();
+        assert_eq!(pclr.nr_entries, 4);
+        assert_eq!(pclr.nr_channels, 3);
+        assert_eq!(pclr.channel_size, vec![8, 8, 8]);
+        assert_eq!(pclr.channel_sign, vec![false, false, false]);
+        // entry 0: (255, 0, 0)
+        assert_eq!(pclr.entries[0], 255);
+        assert_eq!(pclr.entries[1], 0);
+        assert_eq!(pclr.entries[2], 0);
+        // entry 2: (0, 0, 255)
+        assert_eq!(pclr.entries[6], 0);
+        assert_eq!(pclr.entries[7], 0);
+        assert_eq!(pclr.entries[8], 255);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_pclr_too_short_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        let data = vec![0u8; 2]; // need at least 3 bytes
+        assert!(dec.read_pclr(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_pclr_zero_entries_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_be_bytes()); // NE=0
+        data.push(1); // NPC=1
+        data.push(0x07);
+        assert!(dec.read_pclr(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_pclr_duplicate_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes()); // NE=1
+        data.push(1); // NPC=1
+        data.push(0x07);
+        data.push(128); // 1 entry, 1 column
+        dec.read_pclr(&data).unwrap();
+        assert!(dec.read_pclr(&data).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: CMAP box reading
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cmap_valid() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        dec.numcomps = 1;
+        // Set up PCLR with 3 channels first
+        dec.pclr = Some(Pclr {
+            entries: vec![0; 12],
+            channel_sign: vec![false; 3],
+            channel_size: vec![8; 3],
+            nr_entries: 4,
+            nr_channels: 3,
+        });
+        // CMAP: 3 entries (one per palette column)
+        // comp 0 → palette col 0 (mtyp=1)
+        // comp 0 → palette col 1 (mtyp=1)
+        // comp 0 → palette col 2 (mtyp=1)
+        let mut data = Vec::new();
+        for pcol in 0u8..3 {
+            data.extend_from_slice(&0u16.to_be_bytes()); // CMP=0
+            data.push(1); // MTYP=1 (palette)
+            data.push(pcol); // PCOL
+        }
+        dec.read_cmap(&data).unwrap();
+        let cmap = dec.cmap.as_ref().unwrap();
+        assert_eq!(cmap.len(), 3);
+        assert_eq!(
+            cmap[0],
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 0
+            }
+        );
+        assert_eq!(
+            cmap[2],
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 2
+            }
+        );
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cmap_without_pclr_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        dec.numcomps = 1;
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.push(0);
+        data.push(0);
+        assert!(dec.read_cmap(&data).is_err());
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_cmap_wrong_size_fails() {
+        let mut dec = Jp2Decoder::new();
+        dec.ihdr_found = true;
+        dec.numcomps = 1;
+        dec.pclr = Some(Pclr {
+            entries: vec![0; 3],
+            channel_sign: vec![false; 3],
+            channel_size: vec![8; 3],
+            nr_entries: 1,
+            nr_channels: 3,
+        });
+        // Only 2 entries instead of 3
+        let mut data = Vec::new();
+        for _ in 0..2 {
+            data.extend_from_slice(&0u16.to_be_bytes());
+            data.push(1);
+            data.push(0);
+        }
+        assert!(dec.read_cmap(&data).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: CDEF application
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn apply_cdef_marks_alpha() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::Codestream;
+        // Set up a 4-component image (RGBA)
+        dec.j2k.image.comps = vec![
+            ImageComp {
+                prec: 8,
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                ..ImageComp::default()
+            },
+        ];
+        // CDEF: channels 0-2 = colour, channel 3 = opacity
+        dec.cdef = Some(vec![
+            CdefEntry {
+                cn: 0,
+                typ: 0,
+                asoc: 1,
+            },
+            CdefEntry {
+                cn: 1,
+                typ: 0,
+                asoc: 2,
+            },
+            CdefEntry {
+                cn: 2,
+                typ: 0,
+                asoc: 3,
+            },
+            CdefEntry {
+                cn: 3,
+                typ: 1,
+                asoc: 0,
+            }, // alpha
+        ]);
+        dec.apply_cdef();
+        assert_eq!(dec.j2k.image.comps[3].alpha, 1);
+        assert_eq!(dec.j2k.image.comps[0].alpha, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn apply_cdef_swaps_components() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::Codestream;
+        // Set up a 3-component image with data to verify swap
+        dec.j2k.image.comps = vec![
+            ImageComp {
+                prec: 8,
+                data: vec![10],
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                data: vec![20],
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                data: vec![30],
+                ..ImageComp::default()
+            },
+        ];
+        // CDEF maps: channel 0→asoc 3(B), channel 1→asoc 1(R), channel 2→asoc 2(G)
+        // So file order is BGR, should be reordered to RGB
+        dec.cdef = Some(vec![
+            CdefEntry {
+                cn: 0,
+                typ: 0,
+                asoc: 3,
+            }, // channel 0 is B
+            CdefEntry {
+                cn: 1,
+                typ: 0,
+                asoc: 1,
+            }, // channel 1 is R
+            CdefEntry {
+                cn: 2,
+                typ: 0,
+                asoc: 2,
+            }, // channel 2 is G
+        ]);
+        dec.apply_cdef();
+        // After swap: comp[0]=R(20), comp[1]=G(30), comp[2]=B(10)
+        assert_eq!(dec.j2k.image.comps[0].data, vec![20]);
+        assert_eq!(dec.j2k.image.comps[1].data, vec![30]);
+        assert_eq!(dec.j2k.image.comps[2].data, vec![10]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: PCLR + CMAP application
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn apply_pclr_expands_palette() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::Codestream;
+        // 1 component with palette indices: [0, 1, 2, 3]
+        dec.j2k.image.comps = vec![ImageComp {
+            prec: 8,
+            w: 2,
+            h: 2,
+            data: vec![0, 1, 2, 3],
+            ..ImageComp::default()
+        }];
+        dec.j2k.image.x1 = 2;
+        dec.j2k.image.y1 = 2;
+        // Palette: 4 entries, 3 columns (RGB)
+        dec.pclr = Some(Pclr {
+            entries: vec![
+                255, 0, 0, // entry 0: red
+                0, 255, 0, // entry 1: green
+                0, 0, 255, // entry 2: blue
+                255, 255, 255, // entry 3: white
+            ],
+            channel_sign: vec![false, false, false],
+            channel_size: vec![8, 8, 8],
+            nr_entries: 4,
+            nr_channels: 3,
+        });
+        // CMAP: all palette mapping from component 0
+        dec.cmap = Some(vec![
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 0,
+            },
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 1,
+            },
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 2,
+            },
+        ]);
+        dec.apply_pclr();
+
+        // Should now have 3 components
+        assert_eq!(dec.j2k.image.comps.len(), 3);
+        // Component 0 (R): [255, 0, 0, 255]
+        assert_eq!(dec.j2k.image.comps[0].data, vec![255, 0, 0, 255]);
+        // Component 1 (G): [0, 255, 0, 255]
+        assert_eq!(dec.j2k.image.comps[1].data, vec![0, 255, 0, 255]);
+        // Component 2 (B): [0, 0, 255, 255]
+        assert_eq!(dec.j2k.image.comps[2].data, vec![0, 0, 255, 255]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn apply_pclr_clamps_index() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::Codestream;
+        // Indices include out-of-range value
+        dec.j2k.image.comps = vec![ImageComp {
+            prec: 8,
+            w: 2,
+            h: 1,
+            data: vec![-1, 10], // -1 clamps to 0, 10 clamps to 1 (max index)
+            ..ImageComp::default()
+        }];
+        dec.pclr = Some(Pclr {
+            entries: vec![100, 200],
+            channel_sign: vec![false],
+            channel_size: vec![8],
+            nr_entries: 2,
+            nr_channels: 1,
+        });
+        dec.cmap = Some(vec![CmapEntry {
+            cmp: 0,
+            mtyp: 1,
+            pcol: 0,
+        }]);
+        dec.apply_pclr();
+
+        assert_eq!(dec.j2k.image.comps[0].data, vec![100, 200]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn apply_pclr_direct_mapping() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::Codestream;
+        // 2 components: comp 0 has palette indices, comp 1 is direct (e.g., alpha)
+        dec.j2k.image.comps = vec![
+            ImageComp {
+                prec: 8,
+                w: 2,
+                h: 1,
+                data: vec![0, 1],
+                ..ImageComp::default()
+            },
+            ImageComp {
+                prec: 8,
+                w: 2,
+                h: 1,
+                data: vec![128, 255],
+                ..ImageComp::default()
+            },
+        ];
+        dec.pclr = Some(Pclr {
+            entries: vec![10, 20],
+            channel_sign: vec![false],
+            channel_size: vec![8],
+            nr_entries: 2,
+            nr_channels: 1,
+        });
+        // CMAP: channel 0 = palette from comp 0, channel 1 = direct from comp 1
+        dec.cmap = Some(vec![
+            CmapEntry {
+                cmp: 0,
+                mtyp: 1,
+                pcol: 0,
+            },
+            CmapEntry {
+                cmp: 1,
+                mtyp: 0,
+                pcol: 0,
+            },
+        ]);
+        dec.apply_pclr();
+
+        assert_eq!(dec.j2k.image.comps.len(), 2);
+        assert_eq!(dec.j2k.image.comps[0].data, vec![10, 20]); // palette-expanded
+        assert_eq!(dec.j2k.image.comps[1].data, vec![128, 255]); // direct pass-through
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: JP2H integration with optional boxes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_jp2h_with_cdef() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::FileType;
+
+        let ihdr = build_ihdr_box(8, 8, 3, 0x07);
+        let colr = build_colr_enumcs_box(16); // sRGB
+        let cdef = build_cdef_box(&[
+            (0, 0, 1), // R
+            (1, 0, 2), // G
+            (2, 0, 3), // B
+        ]);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&ihdr);
+        payload.extend_from_slice(&colr);
+        payload.extend_from_slice(&cdef);
+
+        dec.read_jp2h(&payload).unwrap();
+        assert!(dec.cdef.is_some());
+        assert_eq!(dec.cdef.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn read_jp2h_with_pclr_and_cmap() {
+        let mut dec = Jp2Decoder::new();
+        dec.state = Jp2State::FileType;
+
+        let ihdr = build_ihdr_box(8, 8, 1, 0x07);
+        let colr = build_colr_enumcs_box(16);
+        let pclr = build_pclr_box(
+            2,
+            3,
+            &[0x07, 0x07, 0x07],
+            &[
+                255, 0, 0, // entry 0
+                0, 255, 0, // entry 1
+            ],
+        );
+        let cmap = build_cmap_box(&[
+            (0, 1, 0), // comp 0 → palette col 0
+            (0, 1, 1), // comp 0 → palette col 1
+            (0, 1, 2), // comp 0 → palette col 2
+        ]);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&ihdr);
+        payload.extend_from_slice(&colr);
+        payload.extend_from_slice(&pclr);
+        payload.extend_from_slice(&cmap);
+
+        dec.read_jp2h(&payload).unwrap();
+        assert!(dec.pclr.is_some());
+        assert!(dec.cmap.is_some());
     }
 }

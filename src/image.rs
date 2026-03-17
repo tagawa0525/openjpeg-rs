@@ -13,6 +13,7 @@ pub struct ImageCompParam {
 }
 
 /// Image component (C: opj_image_comp_t).
+#[derive(Default, Clone)]
 pub struct ImageComp {
     pub dx: u32,
     pub dy: u32,
