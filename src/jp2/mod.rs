@@ -107,6 +107,8 @@ pub struct Jp2Box {
     pub length: u32,
     /// Box type (4-byte code).
     pub box_type: u32,
+    /// Header length (8 for normal, 16 for extended-length boxes).
+    pub header_len: u32,
 }
 
 #[cfg(test)]
@@ -154,8 +156,10 @@ mod tests {
         let b = Jp2Box {
             length: 22,
             box_type: JP2_IHDR,
+            header_len: 8,
         };
         assert_eq!(b.length, 22);
         assert_eq!(b.box_type, JP2_IHDR);
+        assert_eq!(b.header_len, 8);
     }
 }

@@ -83,7 +83,7 @@ impl Jp2Decoder {
             }
 
             // Read box payload
-            let payload_len = box_hdr.length.saturating_sub(8) as usize;
+            let payload_len = (box_hdr.length - box_hdr.header_len) as usize;
             if payload_len > stream.bytes_left() {
                 return Err(Error::InvalidInput(format!(
                     "Box payload {} exceeds available data",
@@ -348,6 +348,9 @@ impl Jp2Decoder {
 }
 
 /// Read a JP2 box header (8 bytes: length + type) from the stream.
+///
+/// Returns a `Jp2Box` with `header_len` set to the number of bytes consumed
+/// by the header (8 for normal, 16 for extended-length boxes).
 fn read_box_header(stream: &mut MemoryStream) -> Result<Jp2Box> {
     let mut buf = [0u8; 8];
     if stream.read(&mut buf)? < 8 {
@@ -362,6 +365,7 @@ fn read_box_header(stream: &mut MemoryStream) -> Result<Jp2Box> {
         return Ok(Jp2Box {
             length: remaining + 8,
             box_type,
+            header_len: 8,
         });
     }
 
@@ -378,13 +382,29 @@ fn read_box_header(stream: &mut MemoryStream) -> Result<Jp2Box> {
             ));
         }
         let xl_low = read_bytes_be(&xlbuf[4..], 4);
+        if xl_low < 16 {
+            return Err(Error::InvalidInput(format!(
+                "Extended-length box too short: {xl_low}"
+            )));
+        }
         return Ok(Jp2Box {
             length: xl_low,
             box_type,
+            header_len: 16,
         });
     }
 
-    Ok(Jp2Box { length, box_type })
+    if length < 8 {
+        return Err(Error::InvalidInput(format!(
+            "Box length {length} is less than minimum header size 8"
+        )));
+    }
+
+    Ok(Jp2Box {
+        length,
+        box_type,
+        header_len: 8,
+    })
 }
 
 #[cfg(test)]
@@ -563,6 +583,42 @@ mod tests {
         let hdr = read_box_header(&mut stream).unwrap();
         assert_eq!(hdr.length, 22);
         assert_eq!(hdr.box_type, JP2_IHDR);
+    }
+
+    #[test]
+    fn read_box_header_extended_length() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_be_bytes()); // length=1 → extended
+        data.extend_from_slice(&JP2_JP2C.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // XLBox high (0)
+        data.extend_from_slice(&100u32.to_be_bytes()); // XLBox low (100)
+        data.extend_from_slice(&[0u8; 84]); // payload (100 - 16 = 84)
+
+        let mut stream = MemoryStream::new_input(data);
+        let hdr = read_box_header(&mut stream).unwrap();
+        assert_eq!(hdr.length, 100);
+        assert_eq!(hdr.box_type, JP2_JP2C);
+        assert_eq!(hdr.header_len, 16);
+    }
+
+    #[test]
+    fn read_box_header_extended_length_too_short() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_be_bytes()); // length=1 → extended
+        data.extend_from_slice(&JP2_JP2C.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // XLBox high
+        data.extend_from_slice(&10u32.to_be_bytes()); // XLBox low < 16
+        let mut stream = MemoryStream::new_input(data);
+        assert!(read_box_header(&mut stream).is_err());
+    }
+
+    #[test]
+    fn read_box_header_length_too_short() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&5u32.to_be_bytes()); // length < 8
+        data.extend_from_slice(&JP2_IHDR.to_be_bytes());
+        let mut stream = MemoryStream::new_input(data);
+        assert!(read_box_header(&mut stream).is_err());
     }
 
     #[test]
