@@ -3,13 +3,8 @@
 // Writes a JP2 file: JP, FTYP, JP2H (IHDR, BPCC, COLR, CDEF), JP2C boxes,
 // wrapping a J2K codestream.
 
-#[allow(unused_imports)]
 use crate::error::Result;
-#[allow(unused_imports)]
 use crate::image::Image;
-#[allow(unused_imports)]
-use crate::io::cio::write_bytes_be;
-#[allow(unused_imports)]
 use crate::jp2::{
     CdefEntry, ColourMethod, JP2_BPCC, JP2_CDEF, JP2_COLR, JP2_FTYP, JP2_IHDR, JP2_JP,
     JP2_JP2_BRAND, JP2_JP2C, JP2_JP2H, JP2_MAGIC, Jp2Colour,
@@ -38,28 +33,164 @@ impl Jp2Encoder {
     /// `cdef` is optional channel definition entries (for alpha channels).
     pub fn write_header(
         &mut self,
-        _image: &Image,
-        _colour: &Jp2Colour,
-        _cdef: Option<&[CdefEntry]>,
+        image: &Image,
+        colour: &Jp2Colour,
+        cdef: Option<&[CdefEntry]>,
     ) -> Result<()> {
-        todo!("Phase 600c: write_header")
+        self.write_jp();
+        self.write_ftyp();
+        self.write_jp2h(image, colour, cdef);
+        Ok(())
     }
 
     /// Write JP2C box wrapping a pre-encoded J2K codestream.
-    pub fn write_codestream(&mut self, _j2k_data: &[u8]) {
-        todo!("Phase 600c: write_codestream")
+    pub fn write_codestream(&mut self, j2k_data: &[u8]) {
+        let length = 8 + j2k_data.len() as u32;
+        self.write_u32(length);
+        self.write_u32(JP2_JP2C);
+        self.output.extend_from_slice(j2k_data);
     }
 
     /// Return the complete JP2 file data.
     pub fn finalize(self) -> Vec<u8> {
         self.output
     }
+
+    /// Write JP signature box (12 bytes).
+    fn write_jp(&mut self) {
+        self.write_u32(12); // length
+        self.write_u32(JP2_JP); // type
+        self.write_u32(JP2_MAGIC); // magic
+    }
+
+    /// Write FTYP (File Type) box (20 bytes).
+    fn write_ftyp(&mut self) {
+        self.write_u32(20); // length
+        self.write_u32(JP2_FTYP); // type
+        self.write_u32(JP2_JP2_BRAND); // brand
+        self.write_u32(0); // minversion
+        self.write_u32(JP2_JP2_BRAND); // CL[0]
+    }
+
+    /// Write JP2H (JP2 Header) super-box.
+    fn write_jp2h(&mut self, image: &Image, colour: &Jp2Colour, cdef: Option<&[CdefEntry]>) {
+        // Build sub-boxes into a temporary buffer to compute total size
+        let mut sub = Vec::new();
+
+        // Determine uniform BPC
+        let bpc = compute_bpc(image);
+
+        // IHDR (22 bytes)
+        write_ihdr(&mut sub, image, bpc);
+
+        // BPCC (only if variable BPC)
+        if bpc == 255 {
+            write_bpcc(&mut sub, image);
+        }
+
+        // COLR
+        write_colr(&mut sub, colour);
+
+        // CDEF (optional)
+        if let Some(entries) = cdef {
+            write_cdef(&mut sub, entries);
+        }
+
+        // Write JP2H box header + sub-boxes
+        let jp2h_len = 8 + sub.len() as u32;
+        self.write_u32(jp2h_len);
+        self.write_u32(JP2_JP2H);
+        self.output.extend_from_slice(&sub);
+    }
+
+    /// Write a big-endian u32.
+    fn write_u32(&mut self, val: u32) {
+        self.output.extend_from_slice(&val.to_be_bytes());
+    }
+}
+
+/// Compute uniform BPC from image components.
+/// Returns 255 if components have different (prec, sgnd).
+fn compute_bpc(image: &Image) -> u8 {
+    if image.comps.is_empty() {
+        return 0;
+    }
+    let first_prec = image.comps[0].prec;
+    let first_sgnd = image.comps[0].sgnd;
+    let uniform = image
+        .comps
+        .iter()
+        .all(|c| c.prec == first_prec && c.sgnd == first_sgnd);
+    if uniform {
+        encode_bpc(first_prec, first_sgnd)
+    } else {
+        255
+    }
+}
+
+/// Write IHDR sub-box (22 bytes) to buffer.
+fn write_ihdr(buf: &mut Vec<u8>, image: &Image, bpc: u8) {
+    buf.extend_from_slice(&22u32.to_be_bytes()); // length
+    buf.extend_from_slice(&JP2_IHDR.to_be_bytes()); // type
+    buf.extend_from_slice(&(image.y1 - image.y0).to_be_bytes()); // height
+    buf.extend_from_slice(&(image.x1 - image.x0).to_be_bytes()); // width
+    buf.extend_from_slice(&(image.comps.len() as u16).to_be_bytes()); // numcomps
+    buf.push(bpc); // BPC
+    buf.push(7); // compression type (JPEG 2000)
+    buf.push(0); // UnkC (colourspace known)
+    buf.push(0); // IPR (no intellectual property)
+}
+
+/// Write BPCC sub-box to buffer.
+fn write_bpcc(buf: &mut Vec<u8>, image: &Image) {
+    let length = 8 + image.comps.len() as u32;
+    buf.extend_from_slice(&length.to_be_bytes());
+    buf.extend_from_slice(&JP2_BPCC.to_be_bytes());
+    for comp in &image.comps {
+        buf.push(encode_bpc(comp.prec, comp.sgnd));
+    }
+}
+
+/// Write COLR sub-box to buffer.
+fn write_colr(buf: &mut Vec<u8>, colour: &Jp2Colour) {
+    match colour.meth {
+        ColourMethod::Enumerated => {
+            let length = 15u32; // 8 + 3 + 4
+            buf.extend_from_slice(&length.to_be_bytes());
+            buf.extend_from_slice(&JP2_COLR.to_be_bytes());
+            buf.push(1); // METH = enumerated
+            buf.push(colour.precedence);
+            buf.push(colour.approx);
+            buf.extend_from_slice(&colour.enumcs.to_be_bytes());
+        }
+        ColourMethod::Icc => {
+            let length = 11 + colour.icc_profile.len() as u32;
+            buf.extend_from_slice(&length.to_be_bytes());
+            buf.extend_from_slice(&JP2_COLR.to_be_bytes());
+            buf.push(2); // METH = ICC
+            buf.push(colour.precedence);
+            buf.push(colour.approx);
+            buf.extend_from_slice(&colour.icc_profile);
+        }
+    }
+}
+
+/// Write CDEF sub-box to buffer.
+fn write_cdef(buf: &mut Vec<u8>, entries: &[CdefEntry]) {
+    let length = 8 + 2 + entries.len() as u32 * 6;
+    buf.extend_from_slice(&length.to_be_bytes());
+    buf.extend_from_slice(&JP2_CDEF.to_be_bytes());
+    buf.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+    for e in entries {
+        buf.extend_from_slice(&e.cn.to_be_bytes());
+        buf.extend_from_slice(&e.typ.to_be_bytes());
+        buf.extend_from_slice(&e.asoc.to_be_bytes());
+    }
 }
 
 /// Encode a raw BPC value from (precision, signed).
 ///
 /// JP2 encoding: bit 7 = signedness, bits 0-6 = (precision - 1).
-#[allow(dead_code)]
 fn encode_bpc(prec: u32, sgnd: bool) -> u8 {
     let mut val = (prec.saturating_sub(1) & 0x7F) as u8;
     if sgnd {
@@ -141,7 +272,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_starts_with_jp_box() {
         let image = create_test_image(1, 8, false);
         let colour = create_gray_colour();
@@ -155,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_has_ftyp_box() {
         let image = create_test_image(1, 8, false);
         let colour = create_gray_colour();
@@ -169,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_has_jp2h_with_ihdr() {
         let image = create_test_image(1, 8, false);
         let colour = create_gray_colour();
@@ -192,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_has_colr_enumerated() {
         let image = create_test_image(1, 8, false);
         let colour = create_gray_colour();
@@ -207,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_with_icc_profile() {
         let image = create_test_image(3, 8, false);
         let colour = Jp2Colour {
@@ -232,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_variable_bpc_writes_bpcc() {
         // 3 components with different precisions
         let mut image = create_test_image(3, 8, false);
@@ -255,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_header_with_cdef() {
         let image = create_test_image(3, 8, false);
         let colour = create_srgb_colour();
@@ -292,7 +423,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn write_codestream_wraps_in_jp2c() {
         let j2k_data = vec![0xFF, 0x4F, 0xAA, 0xBB]; // fake J2K
         let mut enc = Jp2Encoder::new();
@@ -308,7 +439,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn roundtrip_gray_jp2() {
         let image = create_test_image(1, 8, false);
         let colour = create_gray_colour();
@@ -333,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn roundtrip_srgb_jp2() {
         let image = create_test_image(3, 8, false);
         let colour = create_srgb_colour();
