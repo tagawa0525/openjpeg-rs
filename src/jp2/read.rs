@@ -443,11 +443,18 @@ impl Jp2Decoder {
             )));
         }
         let mut entries = Vec::with_capacity(n);
+        let mut seen_cn = Vec::with_capacity(n);
         for i in 0..n {
             let off = 2 + i * 6;
             let cn = read_bytes_be(&data[off..], 2) as u16;
             let typ = read_bytes_be(&data[off + 2..], 2) as u16;
             let asoc = read_bytes_be(&data[off + 4..], 2) as u16;
+            if seen_cn.contains(&cn) {
+                return Err(Error::InvalidInput(format!(
+                    "CDEF: duplicate channel index {cn}"
+                )));
+            }
+            seen_cn.push(cn);
             entries.push(CdefEntry { cn, typ, asoc });
         }
         self.cdef = Some(entries);
