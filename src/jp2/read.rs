@@ -137,6 +137,11 @@ impl Jp2Decoder {
         self.apply_colour();
 
         self.j2k.read_all_tiles(stream)?;
+
+        // Post-decode: apply palette and channel definitions
+        self.apply_pclr();
+        self.apply_cdef();
+
         Ok(())
     }
 
@@ -416,28 +421,251 @@ impl Jp2Decoder {
     }
 
     /// Read CDEF (Channel Definition) box payload.
-    fn read_cdef(&mut self, _data: &[u8]) -> Result<()> {
-        todo!("Phase 600b: CDEF reading")
+    ///
+    /// Layout: N(2) + N × {Cn(2), Typ(2), Asoc(2)}.
+    fn read_cdef(&mut self, data: &[u8]) -> Result<()> {
+        if self.cdef.is_some() {
+            return Err(Error::InvalidInput("Duplicate CDEF box".into()));
+        }
+        if data.len() < 2 {
+            return Err(Error::InvalidInput("CDEF box too short".into()));
+        }
+        let n = read_bytes_be(data, 2) as usize;
+        if n == 0 {
+            return Err(Error::InvalidInput("CDEF: N must be > 0".into()));
+        }
+        if data.len() < 2 + n * 6 {
+            return Err(Error::InvalidInput(format!(
+                "CDEF: expected {} bytes, got {}",
+                2 + n * 6,
+                data.len()
+            )));
+        }
+        let mut entries = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = 2 + i * 6;
+            let cn = read_bytes_be(&data[off..], 2) as u16;
+            let typ = read_bytes_be(&data[off + 2..], 2) as u16;
+            let asoc = read_bytes_be(&data[off + 4..], 2) as u16;
+            entries.push(CdefEntry { cn, typ, asoc });
+        }
+        self.cdef = Some(entries);
+        Ok(())
     }
 
     /// Read PCLR (Palette) box payload.
-    fn read_pclr(&mut self, _data: &[u8]) -> Result<()> {
-        todo!("Phase 600b: PCLR reading")
+    ///
+    /// Layout: NE(2) + NPC(1) + NPC × Bi(1) + NE × NPC × value(variable).
+    fn read_pclr(&mut self, data: &[u8]) -> Result<()> {
+        if self.pclr.is_some() {
+            return Err(Error::InvalidInput("Duplicate PCLR box".into()));
+        }
+        if data.len() < 3 {
+            return Err(Error::InvalidInput("PCLR box too short".into()));
+        }
+        let nr_entries = read_bytes_be(data, 2) as u16;
+        if nr_entries == 0 || nr_entries > 1024 {
+            return Err(Error::InvalidInput(format!(
+                "PCLR: NE must be 1..1024, got {nr_entries}"
+            )));
+        }
+        let nr_channels = data[2];
+        if nr_channels == 0 {
+            return Err(Error::InvalidInput("PCLR: NPC must be > 0".into()));
+        }
+        let header_len = 3 + nr_channels as usize;
+        if data.len() < header_len {
+            return Err(Error::InvalidInput(
+                "PCLR: truncated bit depth table".into(),
+            ));
+        }
+
+        let mut channel_sign = Vec::with_capacity(nr_channels as usize);
+        let mut channel_size = Vec::with_capacity(nr_channels as usize);
+        let mut bytes_per_col = Vec::with_capacity(nr_channels as usize);
+        for i in 0..nr_channels as usize {
+            let bi = data[3 + i];
+            let prec = (bi & 0x7F) + 1;
+            let sgnd = (bi & 0x80) != 0;
+            channel_sign.push(sgnd);
+            channel_size.push(prec);
+            bytes_per_col.push((prec as usize).div_ceil(8));
+        }
+
+        let entry_bytes: usize = bytes_per_col.iter().sum();
+        let expected = header_len + nr_entries as usize * entry_bytes;
+        if data.len() < expected {
+            return Err(Error::InvalidInput(format!(
+                "PCLR: expected {} bytes, got {}",
+                expected,
+                data.len()
+            )));
+        }
+
+        let mut entries = Vec::with_capacity(nr_entries as usize * nr_channels as usize);
+        let mut off = header_len;
+        for _ in 0..nr_entries {
+            for &nbytes in &bytes_per_col {
+                let mut val = 0u32;
+                for b in &data[off..off + nbytes] {
+                    val = (val << 8) | *b as u32;
+                }
+                entries.push(val);
+                off += nbytes;
+            }
+        }
+
+        self.pclr = Some(Pclr {
+            entries,
+            channel_sign,
+            channel_size,
+            nr_entries,
+            nr_channels,
+        });
+        Ok(())
     }
 
     /// Read CMAP (Component Mapping) box payload.
-    fn read_cmap(&mut self, _data: &[u8]) -> Result<()> {
-        todo!("Phase 600b: CMAP reading")
+    ///
+    /// Layout: NPC × {CMP(2), MTYP(1), PCOL(1)}.
+    /// Requires PCLR to be read first.
+    fn read_cmap(&mut self, data: &[u8]) -> Result<()> {
+        if self.cmap.is_some() {
+            return Err(Error::InvalidInput("Duplicate CMAP box".into()));
+        }
+        let pclr = self
+            .pclr
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("CMAP box found before PCLR".into()))?;
+        let nr_channels = pclr.nr_channels as usize;
+        if data.len() < nr_channels * 4 {
+            return Err(Error::InvalidInput(format!(
+                "CMAP: expected {} bytes, got {}",
+                nr_channels * 4,
+                data.len()
+            )));
+        }
+        let mut entries = Vec::with_capacity(nr_channels);
+        for i in 0..nr_channels {
+            let off = i * 4;
+            let cmp = read_bytes_be(&data[off..], 2) as u16;
+            let mtyp = data[off + 2];
+            let pcol = data[off + 3];
+            entries.push(CmapEntry { cmp, mtyp, pcol });
+        }
+        self.cmap = Some(entries);
+        Ok(())
     }
 
     /// Apply CDEF channel definitions to the image.
+    ///
+    /// Sets alpha flags and reorders components based on colour associations.
     pub fn apply_cdef(&mut self) {
-        todo!("Phase 600b: CDEF application")
+        let cdef = match self.cdef.take() {
+            Some(c) => c,
+            None => return,
+        };
+        let comps = &mut self.j2k.image.comps;
+        let nr = comps.len();
+
+        // First pass: mark alpha/opacity channels
+        for entry in &cdef {
+            let cn = entry.cn as usize;
+            if cn >= nr {
+                continue;
+            }
+            if entry.typ == 1 || entry.typ == 2 {
+                // 1 = opacity, 2 = premultiplied opacity
+                comps[cn].alpha = entry.typ;
+            }
+        }
+
+        // Second pass: reorder colour components based on asoc
+        // Build a target position map: for colour channels (typ==0),
+        // asoc-1 is the desired position.
+        let mut order: Vec<Option<usize>> = vec![None; nr];
+        for entry in &cdef {
+            let cn = entry.cn as usize;
+            if cn >= nr || entry.typ != 0 {
+                continue;
+            }
+            let asoc = entry.asoc;
+            if asoc == 0 || asoc == 0xFFFF {
+                continue;
+            }
+            let target = (asoc - 1) as usize;
+            if target < nr {
+                order[target] = Some(cn);
+            }
+        }
+
+        // Apply swaps: place component order[i] into position i
+        for i in 0..nr {
+            if let Some(src) = order[i] {
+                if src == i {
+                    continue;
+                }
+                comps.swap(i, src);
+                // Update remaining order entries to reflect the swap
+                for slot in &mut order[(i + 1)..] {
+                    if *slot == Some(i) {
+                        *slot = Some(src);
+                    }
+                }
+            }
+        }
     }
 
     /// Apply PCLR+CMAP palette expansion to the image.
+    ///
+    /// For palette-mapped channels (mtyp=1), replaces index data with
+    /// palette-looked-up colour values. For direct channels (mtyp=0),
+    /// copies the component data unchanged.
     pub fn apply_pclr(&mut self) {
-        todo!("Phase 600b: PCLR application")
+        let pclr = match self.pclr.take() {
+            Some(p) => p,
+            None => return,
+        };
+        let cmap = match self.cmap.take() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let old_comps = &self.j2k.image.comps;
+        let nr_channels = cmap.len();
+        let nr_entries = pclr.nr_entries as usize;
+        let max_idx = nr_entries.saturating_sub(1) as i32;
+
+        let mut new_comps = Vec::with_capacity(nr_channels);
+
+        for (ch, entry) in cmap.iter().enumerate() {
+            let src_idx = entry.cmp as usize;
+            if src_idx >= old_comps.len() {
+                continue;
+            }
+            let src = &old_comps[src_idx];
+
+            if entry.mtyp == 0 {
+                // Direct mapping: copy component as-is
+                new_comps.push(src.clone());
+            } else {
+                // Palette mapping: lookup each pixel
+                let pcol = entry.pcol as usize;
+                let nr_ch = pclr.nr_channels as usize;
+                let mut data = Vec::with_capacity(src.data.len());
+                for &idx in &src.data {
+                    let k = idx.clamp(0, max_idx) as usize;
+                    data.push(pclr.entries[k * nr_ch + pcol] as i32);
+                }
+                let mut comp = src.clone();
+                comp.data = data;
+                comp.prec = pclr.channel_size[ch.min(pclr.channel_size.len() - 1)] as u32;
+                comp.sgnd = pclr.channel_sign[ch.min(pclr.channel_sign.len() - 1)];
+                new_comps.push(comp);
+            }
+        }
+
+        self.j2k.image.comps = new_comps;
     }
 }
 
@@ -1170,7 +1398,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cdef_valid_rgb_with_alpha() {
         let mut dec = Jp2Decoder::new();
         dec.numcomps = 4;
@@ -1219,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cdef_too_short_fails() {
         let mut dec = Jp2Decoder::new();
         dec.numcomps = 1;
@@ -1229,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cdef_zero_count_fails() {
         let mut dec = Jp2Decoder::new();
         dec.numcomps = 1;
@@ -1239,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cdef_truncated_entries_fails() {
         let mut dec = Jp2Decoder::new();
         dec.numcomps = 2;
@@ -1252,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cdef_duplicate_fails() {
         let mut dec = Jp2Decoder::new();
         dec.numcomps = 1;
@@ -1272,7 +1500,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_pclr_valid() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1309,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_pclr_too_short_fails() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1318,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_pclr_zero_entries_fails() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1330,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_pclr_duplicate_fails() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1348,7 +1576,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cmap_valid() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1393,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cmap_without_pclr_fails() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1406,7 +1634,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_cmap_wrong_size_fails() {
         let mut dec = Jp2Decoder::new();
         dec.ihdr_found = true;
@@ -1433,7 +1661,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn apply_cdef_marks_alpha() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Codestream;
@@ -1485,7 +1713,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn apply_cdef_swaps_components() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Codestream;
@@ -1538,7 +1766,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn apply_pclr_expands_palette() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Codestream;
@@ -1596,7 +1824,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn apply_pclr_clamps_index() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Codestream;
@@ -1626,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn apply_pclr_direct_mapping() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::Codestream;
@@ -1679,7 +1907,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_jp2h_with_cdef() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::FileType;
@@ -1702,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn read_jp2h_with_pclr_and_cmap() {
         let mut dec = Jp2Decoder::new();
         dec.state = Jp2State::FileType;
