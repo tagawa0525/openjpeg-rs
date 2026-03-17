@@ -37,6 +37,18 @@ impl Jp2Encoder {
         colour: &Jp2Colour,
         cdef: Option<&[CdefEntry]>,
     ) -> Result<()> {
+        if image.comps.is_empty() {
+            return Err(crate::error::Error::InvalidInput(
+                "Image has no components".into(),
+            ));
+        }
+        let w = image.x1.saturating_sub(image.x0);
+        let h = image.y1.saturating_sub(image.y0);
+        if w == 0 || h == 0 {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "Invalid image dimensions: {w}x{h}"
+            )));
+        }
         self.write_jp();
         self.write_ftyp();
         self.write_jp2h(image, colour, cdef);
@@ -44,11 +56,19 @@ impl Jp2Encoder {
     }
 
     /// Write JP2C box wrapping a pre-encoded J2K codestream.
-    pub fn write_codestream(&mut self, j2k_data: &[u8]) {
-        let length = 8 + j2k_data.len() as u32;
-        self.write_u32(length);
+    ///
+    /// Returns `Err` if the codestream size exceeds the 4GB box length limit.
+    pub fn write_codestream(&mut self, j2k_data: &[u8]) -> Result<()> {
+        let total = 8u64 + j2k_data.len() as u64;
+        if total > u32::MAX as u64 {
+            return Err(crate::error::Error::InvalidInput(
+                "Codestream too large for JP2C box (>4GB)".into(),
+            ));
+        }
+        self.write_u32(total as u32);
         self.write_u32(JP2_JP2C);
         self.output.extend_from_slice(j2k_data);
+        Ok(())
     }
 
     /// Return the complete JP2 file data.
@@ -427,7 +447,7 @@ mod tests {
     fn write_codestream_wraps_in_jp2c() {
         let j2k_data = vec![0xFF, 0x4F, 0xAA, 0xBB]; // fake J2K
         let mut enc = Jp2Encoder::new();
-        enc.write_codestream(&j2k_data);
+        enc.write_codestream(&j2k_data).unwrap();
 
         assert_eq!(read_bytes_be(&enc.output[0..], 4), 12); // length = 8 + 4
         assert_eq!(read_bytes_be(&enc.output[4..], 4), JP2_JP2C);
@@ -449,7 +469,7 @@ mod tests {
 
         let mut enc = Jp2Encoder::new();
         enc.write_header(&image, &colour, None).unwrap();
-        enc.write_codestream(&j2k);
+        enc.write_codestream(&j2k).unwrap();
         let jp2_data = enc.finalize();
 
         // Decode
@@ -473,7 +493,7 @@ mod tests {
 
         let mut enc = Jp2Encoder::new();
         enc.write_header(&image, &colour, None).unwrap();
-        enc.write_codestream(&j2k);
+        enc.write_codestream(&j2k).unwrap();
         let jp2_data = enc.finalize();
 
         // Decode
