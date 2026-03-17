@@ -2,6 +2,7 @@
 //
 // Marker constants, decoder/encoder state, and sub-module declarations.
 
+pub mod markers;
 pub mod params;
 
 // ---------------------------------------------------------------------------
