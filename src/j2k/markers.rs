@@ -418,6 +418,192 @@ pub fn read_com(data: &[u8]) -> Result<(u16, Vec<u8>)> {
 }
 
 // ---------------------------------------------------------------------------
+// Marker WRITING functions
+// ---------------------------------------------------------------------------
+
+use crate::io::cio::write_bytes_be;
+
+/// Write SOC marker (2 bytes).
+pub fn write_soc(out: &mut Vec<u8>) {
+    let mut buf = [0u8; 2];
+    write_bytes_be(&mut buf, 0xFF4F, 2);
+    out.extend_from_slice(&buf);
+}
+
+/// Write SIZ marker.
+pub fn write_siz(out: &mut Vec<u8>, image: &Image, cp: &CodingParameters) {
+    let numcomps = image.comps.len();
+    let seg_len = 38 + 3 * numcomps; // Lsiz includes itself (2) + payload (36 + 3*n)
+    let mut buf = vec![0u8; 2 + seg_len];
+    let mut pos = 0;
+
+    write_bytes_be(&mut buf[pos..], 0xFF51, 2);
+    pos += 2;
+    write_bytes_be(&mut buf[pos..], seg_len as u32, 2);
+    pos += 2;
+    write_bytes_be(&mut buf[pos..], cp.rsiz as u32, 2);
+    pos += 2;
+    write_bytes_be(&mut buf[pos..], image.x1, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], image.y1, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], image.x0, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], image.y0, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], cp.tdx, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], cp.tdy, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], cp.tx0, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], cp.ty0, 4);
+    pos += 4;
+    write_bytes_be(&mut buf[pos..], numcomps as u32, 2);
+    pos += 2;
+
+    for comp in &image.comps {
+        let ssiz = ((comp.prec - 1) & 0x7F) | if comp.sgnd { 0x80 } else { 0 };
+        buf[pos] = ssiz as u8;
+        pos += 1;
+        buf[pos] = comp.dx as u8;
+        pos += 1;
+        buf[pos] = comp.dy as u8;
+        pos += 1;
+    }
+
+    out.extend_from_slice(&buf);
+}
+
+/// Write COD marker.
+pub fn write_cod(out: &mut Vec<u8>, tcp: &TileCodingParameters) {
+    let tccp = &tcp.tccps[0]; // COD uses first TCCP
+    let has_prt = (tcp.csty & J2K_CCP_CSTY_PRT) != 0;
+    let spcod_len = 5 + if has_prt {
+        tccp.numresolutions as usize
+    } else {
+        0
+    };
+    // marker(2) + Lcod(2) + Scod(1) + SGcod(4) + SPCod(variable)
+    let total = 2 + 2 + 5 + spcod_len;
+    let mut buf = vec![0u8; total];
+    let mut pos = 0;
+
+    write_bytes_be(&mut buf[pos..], 0xFF52, 2);
+    pos += 2;
+    write_bytes_be(&mut buf[pos..], (total - 2) as u32, 2); // Lcod
+    pos += 2;
+    buf[pos] = tcp.csty as u8;
+    pos += 1;
+    buf[pos] = tcp.prg as u8;
+    pos += 1;
+    write_bytes_be(&mut buf[pos..], tcp.numlayers, 2);
+    pos += 2;
+    buf[pos] = tcp.mct as u8;
+    pos += 1;
+
+    // SPCod
+    write_spcod_spcoc_to_buf(&mut buf[pos..], tccp, tcp.csty);
+
+    out.extend_from_slice(&buf);
+}
+
+/// Write SPCod/SPCoc into a buffer.
+fn write_spcod_spcoc_to_buf(buf: &mut [u8], tccp: &TileCompCodingParameters, csty: u32) {
+    buf[0] = (tccp.numresolutions - 1) as u8;
+    buf[1] = (tccp.cblkw - 2) as u8;
+    buf[2] = (tccp.cblkh - 2) as u8;
+    buf[3] = tccp.cblksty as u8;
+    buf[4] = tccp.qmfbid as u8;
+
+    if (csty & J2K_CCP_CSTY_PRT) != 0 {
+        for i in 0..tccp.numresolutions as usize {
+            buf[5 + i] = (tccp.prcw[i] | (tccp.prch[i] << 4)) as u8;
+        }
+    }
+}
+
+/// Write QCD marker.
+pub fn write_qcd(out: &mut Vec<u8>, tcp: &TileCodingParameters) {
+    let tccp = &tcp.tccps[0];
+    let num_bands = if tccp.qntsty == J2K_CCP_QNTSTY_NOQNT {
+        tccp.numresolutions as usize * 3 - 2
+    } else if tccp.qntsty == J2K_CCP_QNTSTY_SIQNT {
+        1
+    } else {
+        tccp.numresolutions as usize * 3 - 2
+    };
+    let band_bytes = if tccp.qntsty == J2K_CCP_QNTSTY_NOQNT {
+        num_bands
+    } else {
+        num_bands * 2
+    };
+    let seg_len = 1 + band_bytes; // Sqcx(1) + band data
+    let total = 2 + 2 + seg_len; // marker(2) + Lqcd(2) + payload
+    let mut buf = vec![0u8; total];
+    let mut pos = 0;
+
+    write_bytes_be(&mut buf[pos..], 0xFF5C, 2);
+    pos += 2;
+    write_bytes_be(&mut buf[pos..], (total - 2) as u32, 2); // Lqcd
+    pos += 2;
+
+    // Sqcx
+    buf[pos] = (tccp.qntsty | (tccp.numgbits << 5)) as u8;
+    pos += 1;
+
+    // Band data
+    if tccp.qntsty == J2K_CCP_QNTSTY_NOQNT {
+        for i in 0..num_bands {
+            buf[pos] = (tccp.stepsizes[i].expn << 3) as u8;
+            pos += 1;
+        }
+    } else {
+        for i in 0..num_bands {
+            let val =
+                ((tccp.stepsizes[i].expn as u32) << 11) | (tccp.stepsizes[i].mant as u32 & 0x7FF);
+            write_bytes_be(&mut buf[pos..], val, 2);
+            pos += 2;
+        }
+    }
+
+    out.extend_from_slice(&buf);
+}
+
+/// Write SOT marker (12 bytes). Returns the offset of the Psot field for later patching.
+pub fn write_sot(out: &mut Vec<u8>, tile_no: u32, tp_idx: u8, nb_parts: u8) -> usize {
+    let psot_offset = out.len() + 6; // offset of Psot field in output
+    let mut buf = [0u8; 12];
+    write_bytes_be(&mut buf[0..], 0xFF90, 2);
+    write_bytes_be(&mut buf[2..], 10, 2); // Lsot = 10
+    write_bytes_be(&mut buf[4..], tile_no, 2);
+    write_bytes_be(&mut buf[6..], 0, 4); // Psot = 0 (filled later)
+    buf[10] = tp_idx;
+    buf[11] = nb_parts;
+    out.extend_from_slice(&buf);
+    psot_offset
+}
+
+/// Patch the Psot field in a previously written SOT marker.
+pub fn patch_psot(out: &mut [u8], psot_offset: usize, psot: u32) {
+    write_bytes_be(&mut out[psot_offset..], psot, 4);
+}
+
+/// Write SOD marker (2 bytes).
+pub fn write_sod(out: &mut Vec<u8>) {
+    let mut buf = [0u8; 2];
+    write_bytes_be(&mut buf, 0xFF93, 2);
+    out.extend_from_slice(&buf);
+}
+
+/// Write EOC marker (2 bytes).
+pub fn write_eoc(out: &mut Vec<u8>) {
+    let mut buf = [0u8; 2];
+    write_bytes_be(&mut buf, 0xFFD9, 2);
+    out.extend_from_slice(&buf);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
