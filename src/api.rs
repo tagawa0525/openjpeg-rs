@@ -23,12 +23,23 @@ pub enum CodecFormat {
 
 /// Decode a JPEG 2000 image from a byte buffer.
 ///
-/// Automatically selects J2K or JP2 codec based on `format`.
+/// Uses the specified `format` to select the appropriate codec.
+/// Use [`detect_format`] to determine the format from file contents.
 pub fn decode(data: &[u8], format: CodecFormat) -> Result<Image> {
     if data.is_empty() {
         return Err(Error::EndOfStream);
     }
-    let mut stream = MemoryStream::new_input(data.to_vec());
+    decode_owned(data.to_vec(), format)
+}
+
+/// Decode a JPEG 2000 image from an owned byte buffer (zero-copy).
+///
+/// Like [`decode`], but takes ownership of the data to avoid copying.
+pub fn decode_owned(data: Vec<u8>, format: CodecFormat) -> Result<Image> {
+    if data.is_empty() {
+        return Err(Error::EndOfStream);
+    }
+    let mut stream = MemoryStream::new_input(data);
 
     match format {
         CodecFormat::J2k => {
@@ -110,18 +121,16 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
 /// J2K starts with SOC marker (0xFF4F).
 /// JP2 starts with a JP signature box (length=12, type=0x6A502020).
 pub fn detect_format(data: &[u8]) -> Option<CodecFormat> {
-    if data.len() < 4 {
-        return None;
-    }
-    // Check J2K: SOC marker
-    if data[0] == 0xFF && data[1] == 0x4F {
+    // Check J2K: SOC marker (2 bytes)
+    if data.len() >= 2 && data[0] == 0xFF && data[1] == 0x4F {
         return Some(CodecFormat::J2k);
     }
-    // Check JP2: signature box starts with length (any) + type 'jP  '
+    // Check JP2: signature box (length=12, type='jP  ', magic=0x0D0A870A)
     if data.len() >= 12 {
+        let box_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let box_type = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let magic = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-        if box_type == crate::jp2::JP2_JP && magic == JP2_MAGIC {
+        if box_len == 12 && box_type == crate::jp2::JP2_JP && magic == JP2_MAGIC {
             return Some(CodecFormat::Jp2);
         }
     }
