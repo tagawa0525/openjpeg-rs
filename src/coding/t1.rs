@@ -1376,6 +1376,63 @@ impl T1 {
 
         Ok(())
     }
+
+    /// Decode an HT (High Throughput) code-block (C: opj_t1_ht_decode_cblk).
+    ///
+    /// Dispatched when `cblksty & J2K_CCP_CBLKSTY_HT != 0`. HT codeblocks
+    /// have a different segment structure: segment 0 = cleanup (1 pass),
+    /// segment 1 = SPP+MRP (remaining passes).
+    pub fn decode_cblk_ht(
+        &mut self,
+        segments: &[DecodeSegment],
+        numbps: u32,
+        roishift: u32,
+        zero_bplanes: u32,
+    ) -> Result<()> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        let p = roishift + numbps;
+        if p > 31 {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "decode_cblk_ht: p ({p}) must be <= 31"
+            )));
+        }
+
+        // Concatenate segment data
+        let total_len: usize = segments.iter().map(|s| s.data.len()).sum();
+        let mut cblkdata = vec![0u8; total_len];
+        let mut offset = 0;
+        for seg in segments {
+            cblkdata[offset..offset + seg.data.len()].copy_from_slice(seg.data);
+            offset += seg.data.len();
+        }
+
+        // Build lengths array: segment 0 = cleanup, segment 1 = SPP+MRP
+        let mut num_passes = 0u32;
+        let mut lengths = Vec::new();
+        for seg in segments {
+            num_passes += seg.num_passes;
+            lengths.push(seg.data.len() as u32);
+        }
+
+        let result = crate::coding::ht_dec::ht_decode_cblk(
+            &cblkdata,
+            self.w,
+            self.h,
+            num_passes,
+            &lengths,
+            zero_bplanes,
+            p,
+        )?;
+
+        // Copy HT decode results into T1's data buffer
+        let n = result.len().min(self.data.len());
+        self.data[..n].copy_from_slice(&result[..n]);
+
+        Ok(())
+    }
 }
 
 // --- Context helper functions ---
@@ -2298,5 +2355,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: HT decode dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn t1_decode_cblk_ht_allzero() {
+        // HT decode of an all-zero codeblock should overwrite data with zeros.
+        let mut t1 = T1::new(false);
+        t1.allocate_buffers(2, 2).unwrap();
+        // Pre-fill with sentinels to verify decode actually writes
+        t1.data.fill(0x12345678);
+
+        let data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        let segments = [DecodeSegment {
+            data: &data,
+            num_passes: 1,
+        }];
+
+        t1.decode_cblk_ht(&segments, 8, 0, 7).unwrap();
+        // Sentinels should be overwritten with zeros
+        assert!(t1.data.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn t1_decode_cblk_ht_copies_to_data() {
+        // Verify HT decode results are stored in T1's data buffer.
+        let mut t1 = T1::new(false);
+        t1.allocate_buffers(4, 4).unwrap();
+        // Pre-fill with sentinels
+        t1.data.fill(0xDEADBEEFu32 as i32);
+
+        let data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        let segments = [DecodeSegment {
+            data: &data,
+            num_passes: 1,
+        }];
+
+        t1.decode_cblk_ht(&segments, 8, 0, 7).unwrap();
+        assert_eq!(t1.data.len(), 16); // 4x4
+        // Sentinels should be overwritten
+        assert!(t1.data.iter().all(|&v| v != 0xDEADBEEFu32 as i32));
     }
 }
