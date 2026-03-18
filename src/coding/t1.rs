@@ -1382,14 +1382,49 @@ impl T1 {
     /// Dispatched when `cblksty & J2K_CCP_CBLKSTY_HT != 0`. HT codeblocks
     /// have a different segment structure: segment 0 = cleanup (1 pass),
     /// segment 1 = SPP+MRP (remaining passes).
-    #[allow(dead_code)]
     pub fn decode_cblk_ht(
         &mut self,
-        _segments: &[DecodeSegment],
-        _numbps: u32,
-        _roishift: u32,
+        segments: &[DecodeSegment],
+        numbps: u32,
+        roishift: u32,
     ) -> Result<()> {
-        todo!("Phase 700c: T1 HT decode")
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        let p = roishift + numbps;
+        if p > 31 {
+            return Err(crate::error::Error::InvalidInput(format!(
+                "decode_cblk_ht: p ({p}) must be <= 31"
+            )));
+        }
+
+        // Concatenate segment data
+        let total_len: usize = segments.iter().map(|s| s.data.len()).sum();
+        let mut cblkdata = vec![0u8; total_len];
+        let mut offset = 0;
+        for seg in segments {
+            cblkdata[offset..offset + seg.data.len()].copy_from_slice(seg.data);
+            offset += seg.data.len();
+        }
+
+        // Build lengths array: segment 0 = cleanup, segment 1 = SPP+MRP
+        let mut num_passes = 0u32;
+        let mut lengths = Vec::new();
+        for seg in segments {
+            num_passes += seg.num_passes;
+            lengths.push(seg.data.len() as u32);
+        }
+
+        let result = crate::coding::ht_dec::ht_decode_cblk(
+            &cblkdata, self.w, self.h, num_passes, &lengths, 0, p,
+        )?;
+
+        // Copy HT decode results into T1's data buffer
+        let n = result.len().min(self.data.len());
+        self.data[..n].copy_from_slice(&result[..n]);
+
+        Ok(())
     }
 }
 
@@ -2320,7 +2355,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t1_decode_cblk_ht_allzero() {
         // HT decode of an all-zero codeblock should produce all-zero data.
         let mut t1 = T1::new(false);
@@ -2337,7 +2371,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t1_decode_cblk_ht_copies_to_data() {
         // Verify HT decode results are stored in T1's data buffer.
         let mut t1 = T1::new(false);

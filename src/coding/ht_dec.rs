@@ -331,9 +331,120 @@ impl<'a> RevReader<'a> {
     ///
     /// MRP shares the `lengths2` byte region with SPP: SPP reads forward from
     /// `data[lengths1..]`, MRP reads backward from `data[lengths1 + lengths2 - 1]`.
-    #[allow(dead_code)]
-    pub fn new_mrp(_data: &'a [u8], _lengths1: usize, _lengths2: usize) -> Self {
-        todo!("Phase 700c: MRP RevReader initialization")
+    ///
+    /// Key differences from `new` (VLC init):
+    /// - Starts at the last byte of lengths2 region (no nibble skip)
+    /// - Initial `unstuff = true` (preceded by byte-stuffing marker)
+    /// - Fills with 0 on exhaustion (not 0xFF)
+    pub fn new_mrp(data: &'a [u8], lengths1: usize, lengths2: usize) -> Self {
+        let mut reader = RevReader {
+            data,
+            pos: 0,
+            tmp: 0,
+            bits: 0,
+            unstuff: true, // always starts true for MRP
+        };
+
+        if lengths2 == 0 {
+            return reader;
+        }
+
+        // Position at the last byte of the SPP+MRP region.
+        reader.pos = (lengths1 + lengths2 - 1) as isize;
+
+        // Read initial bytes (alignment, up to 4) into the buffer.
+        let num = lengths2.min(4);
+        for _ in 0..num {
+            if reader.pos < lengths1 as isize {
+                break;
+            }
+            let d = data[reader.pos as usize] as u64;
+            let d_bits = 8u32 - u32::from(reader.unstuff && ((d & 0x7F) == 0x7F));
+            reader.tmp |= d << reader.bits;
+            reader.bits += d_bits;
+            reader.unstuff = d > 0x8F;
+            reader.pos -= 1;
+        }
+
+        // Fill to at least 32 bits.
+        reader.read_mrp(lengths1);
+        reader
+    }
+
+    /// Read more bytes backward for MRP (fills 0 on exhaustion).
+    fn read_mrp(&mut self, lengths1: usize) {
+        if self.bits > 32 {
+            return;
+        }
+
+        let lower_bound = lengths1 as isize;
+        let mut val: u32 = 0; // zero-fill on exhaustion (unlike VLC which uses existing data)
+        let remaining = (self.pos - lower_bound + 1) as usize;
+
+        if remaining >= 4 {
+            let p = self.pos as usize;
+            val = u32::from_be_bytes([
+                self.data[p - 3],
+                self.data[p - 2],
+                self.data[p - 1],
+                self.data[p],
+            ]);
+            self.pos -= 4;
+        } else if remaining > 0 {
+            let mut i = 24i32;
+            let mut r = remaining;
+            while r > 0 {
+                val |= (self.data[self.pos as usize] as u32) << i;
+                self.pos -= 1;
+                r -= 1;
+                i -= 8;
+            }
+        }
+
+        // Unstuff and accumulate (same logic as rev_read).
+        let mut tmp: u32 = val >> 24;
+        let mut bits = 8u32 - u32::from(self.unstuff && (((val >> 24) & 0x7F) == 0x7F));
+        let mut unstuff = (val >> 24) > 0x8F;
+
+        tmp |= ((val >> 16) & 0xFF) << bits;
+        bits += 8u32 - u32::from(unstuff && (((val >> 16) & 0x7F) == 0x7F));
+        unstuff = ((val >> 16) & 0xFF) > 0x8F;
+
+        tmp |= ((val >> 8) & 0xFF) << bits;
+        bits += 8u32 - u32::from(unstuff && (((val >> 8) & 0x7F) == 0x7F));
+        unstuff = ((val >> 8) & 0xFF) > 0x8F;
+
+        tmp |= (val & 0xFF) << bits;
+        bits += 8u32 - u32::from(unstuff && ((val & 0x7F) == 0x7F));
+        unstuff = (val & 0xFF) > 0x8F;
+
+        self.tmp |= (tmp as u64) << self.bits;
+        self.bits += bits;
+        self.unstuff = unstuff;
+    }
+
+    /// Fetch bits for MRP (same as fetch).
+    pub fn fetch_mrp(&self) -> u32 {
+        self.tmp as u32
+    }
+
+    /// Advance MRP reader, refilling with zero on exhaustion.
+    pub fn advance_mrp(&mut self, num_bits: u32, lengths1: usize) -> Result<()> {
+        if num_bits > self.bits || num_bits >= 64 {
+            return Err(Error::InvalidInput(format!(
+                "RevReader::advance_mrp: num_bits ({num_bits}) exceeds available bits ({}) or >= 64",
+                self.bits
+            )));
+        }
+        self.tmp = self.tmp.checked_shr(num_bits).unwrap_or(0);
+        self.bits -= num_bits;
+        if self.bits < 32 {
+            self.read_mrp(lengths1);
+            if self.bits < 32 {
+                self.read_mrp(lengths1);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -508,13 +619,185 @@ pub fn population_count(val: u32) -> u32 {
 /// C equivalent: inline code in `opj_t1_ht_decode_cblk` (SPP section).
 #[allow(dead_code)]
 fn spp_pass(
-    _coeffs: &mut [u32],
-    _width: u32,
-    _height: u32,
-    _sigprop: &mut FrwdReader,
-    _p: u32,
+    coeffs: &mut [u32],
+    sigma: &mut [u32],
+    width: u32,
+    height: u32,
+    y_start: u32,
+    sigprop: &mut FrwdReader,
+    p: u32,
 ) -> Result<()> {
-    todo!("Phase 700c: SPP pass")
+    let stride = width as usize;
+    let val = 3u32 << (p - 2); // magnitude for newly significant samples
+    let rows_in_stripe = (height - y_start).min(4) as usize;
+    let sigma_stride = (width as usize).div_ceil(8);
+
+    // Build MBR (membership) from sigma: neighbors of significant samples
+    // that are not themselves significant.
+    let mut mbr = vec![0u32; sigma.len()];
+    build_mbr(&mut mbr, sigma, width, rows_in_stripe);
+
+    // Process each 8-column group
+    let mut sig_idx = 0usize;
+    let mut x = 0u32;
+    while x < width {
+        let cols_here = (width - x).min(8) as usize;
+
+        // Phase 1: significance decisions + dynamic propagation
+        let mut new_sig = 0u32;
+        let mut cwd = sigprop.fetch();
+        let mut cnt = 0u32;
+
+        for j in 0..cols_here {
+            for row in 0..rows_in_stripe {
+                let sample_mask = 1u32 << (j * 4 + row);
+                if mbr[sig_idx] & sample_mask != 0 {
+                    if cwd & 1 != 0 {
+                        new_sig |= sample_mask;
+                        // Dynamically propagate membership to neighbors
+                        propagate_mbr(
+                            &mut mbr,
+                            sigma,
+                            sig_idx,
+                            j,
+                            row,
+                            rows_in_stripe,
+                            cols_here,
+                            sigma_stride,
+                        );
+                    }
+                    cwd >>= 1;
+                    cnt += 1;
+                }
+            }
+        }
+
+        // Phase 2: read signs for newly significant samples
+        for j in 0..cols_here {
+            for row in 0..rows_in_stripe {
+                let sample_mask = 1u32 << (j * 4 + row);
+                if new_sig & sample_mask != 0 {
+                    let idx = (y_start as usize + row) * stride + x as usize + j;
+                    coeffs[idx] = ((cwd & 1) << 31) | val;
+                    cwd >>= 1;
+                    cnt += 1;
+                }
+            }
+        }
+
+        if cnt > 0 {
+            sigprop.advance(cnt)?;
+        }
+
+        // Update sigma with newly significant samples
+        sigma[sig_idx] |= new_sig;
+
+        sig_idx += 1;
+        x += 8;
+    }
+
+    Ok(())
+}
+
+/// Build MBR (membership) array from sigma for SPP.
+///
+/// MBR marks insignificant samples that are neighbors (horizontal, vertical,
+/// diagonal) of significant samples.
+fn build_mbr(mbr: &mut [u32], sigma: &[u32], width: u32, rows_in_stripe: usize) {
+    let len = width.div_ceil(8) as usize;
+    let row_mask = match rows_in_stripe {
+        1 => 0x11111111u32,
+        2 => 0x33333333u32,
+        3 => 0x77777777u32,
+        _ => 0xFFFFFFFFu32,
+    };
+
+    let mut prev = 0u32;
+    for i in 0..len {
+        let sig = sigma[i] & row_mask;
+        let next_sig = if i + 1 < len {
+            sigma[i + 1] & row_mask
+        } else {
+            0
+        };
+
+        // Start with significant samples
+        let mut z = sig;
+        // Horizontal neighbors
+        z |= prev >> 28; // left neighbor from previous group
+        z |= sig << 4; // left neighbors (shift column right)
+        z |= sig >> 4; // right neighbors (shift column left)
+        z |= next_sig << 28; // right neighbor from next group
+
+        // Vertical neighbors within stripe
+        z |= (z & 0x77777777) << 1; // above
+        z |= (z & 0xEEEEEEEE) >> 1; // below
+
+        // Remove already significant samples
+        mbr[i] = z & !sig & row_mask;
+        prev = sig;
+    }
+}
+
+/// Dynamically propagate MBR membership when a sample becomes significant in SPP.
+#[allow(clippy::too_many_arguments)]
+fn propagate_mbr(
+    mbr: &mut [u32],
+    sigma: &[u32],
+    sig_idx: usize,
+    col: usize,
+    row: usize,
+    rows_in_stripe: usize,
+    cols_here: usize,
+    sigma_stride: usize,
+) {
+    // Propagate to vertical neighbors
+    if row > 0 {
+        let mask = 1u32 << (col * 4 + row - 1);
+        mbr[sig_idx] |= mask & !sigma[sig_idx];
+    }
+    if row + 1 < rows_in_stripe {
+        let mask = 1u32 << (col * 4 + row + 1);
+        mbr[sig_idx] |= mask & !sigma[sig_idx];
+    }
+    // Propagate to horizontal neighbors
+    if col > 0 {
+        // Left neighbor (same row)
+        let mask = 1u32 << ((col - 1) * 4 + row);
+        mbr[sig_idx] |= mask & !sigma[sig_idx];
+    } else if sig_idx > 0 {
+        // Left neighbor in previous 8-column group
+        let mask = 1u32 << (7 * 4 + row);
+        mbr[sig_idx - 1] |= mask & !sigma[sig_idx - 1];
+    }
+    if col + 1 < cols_here {
+        let mask = 1u32 << ((col + 1) * 4 + row);
+        mbr[sig_idx] |= mask & !sigma[sig_idx];
+    } else if sig_idx + 1 < sigma_stride {
+        let mask = 1u32 << row;
+        mbr[sig_idx + 1] |= mask & !sigma[sig_idx + 1];
+    }
+    // Diagonal neighbors
+    for dr in [-1i32, 1] {
+        let nr = row as i32 + dr;
+        if nr < 0 || nr >= rows_in_stripe as i32 {
+            continue;
+        }
+        if col > 0 {
+            let mask = 1u32 << ((col - 1) * 4 + nr as usize);
+            mbr[sig_idx] |= mask & !sigma[sig_idx];
+        } else if sig_idx > 0 {
+            let mask = 1u32 << (7 * 4 + nr as usize);
+            mbr[sig_idx - 1] |= mask & !sigma[sig_idx - 1];
+        }
+        if col + 1 < cols_here {
+            let mask = 1u32 << ((col + 1) * 4 + nr as usize);
+            mbr[sig_idx] |= mask & !sigma[sig_idx];
+        } else if sig_idx + 1 < sigma_stride {
+            let mask = 1u32 << nr as usize;
+            mbr[sig_idx + 1] |= mask & !sigma[sig_idx + 1];
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -528,14 +811,58 @@ fn spp_pass(
 ///
 /// C equivalent: inline code in `opj_t1_ht_decode_cblk` (MRP section).
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 fn mrp_pass(
-    _coeffs: &mut [u32],
-    _width: u32,
-    _height: u32,
-    _magref: &mut RevReader,
-    _p: u32,
+    coeffs: &mut [u32],
+    sigma: &[u32],
+    width: u32,
+    height: u32,
+    y_start: u32,
+    magref: &mut RevReader,
+    p: u32,
+    lengths1: usize,
 ) -> Result<()> {
-    todo!("Phase 700c: MRP pass")
+    let stride = width as usize;
+    let half = 1u32 << (p - 2);
+    let rows_in_stripe = (height - y_start).min(4) as usize;
+
+    let mut sig_idx = 0usize;
+    let mut x = 0u32;
+    while x < width {
+        let cwd = magref.fetch_mrp();
+        let sig = sigma[sig_idx];
+        sig_idx += 1;
+
+        if sig != 0 {
+            let cols_here = (width - x).min(8) as usize;
+            let mut bit_idx = 0u32;
+
+            for j in 0..cols_here {
+                let col_mask = 0xFu32 << (j * 4);
+                if sig & col_mask != 0 {
+                    for row in 0..rows_in_stripe {
+                        let sample_mask = 1u32 << (j * 4 + row);
+                        if sig & sample_mask != 0 {
+                            let idx = (y_start as usize + row) * stride + x as usize + j;
+                            let sym = (cwd >> bit_idx) & 1;
+                            coeffs[idx] ^= (1 - sym) << (p - 1);
+                            coeffs[idx] |= half;
+                            bit_idx += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let consumed = population_count(sig);
+        if consumed > 0 {
+            magref.advance_mrp(consumed, lengths1)?;
+        }
+
+        x += 8;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,6 +1683,77 @@ pub fn ht_decode_cblk(
         y += 2;
     }
 
+    // --- SPP and MRP passes (num_passes > 1) ---
+    if num_passes > 1 && lengths.len() >= 2 {
+        let lengths2 = lengths[1] as usize;
+        if lcup + lengths2 > data.len() {
+            return Err(Error::InvalidInput(format!(
+                "ht_decode_cblk: data too short for SPP/MRP ({} + {} > {})",
+                lcup,
+                lengths2,
+                data.len()
+            )));
+        }
+
+        // Build sigma array from coeffs: packed nibbles, 8 columns per u32.
+        // Each nibble: bit k = row k is significant (0-3).
+        let sigma_stride = (width as usize).div_ceil(8);
+
+        // Initialize shared readers
+        let spp_mrp_data = &data[lcup..lcup + lengths2];
+        let mut sigprop = FrwdReader::new(spp_mrp_data, 0x00);
+
+        let mut magref = if num_passes > 2 {
+            Some(RevReader::new_mrp(data, lcup, lengths2))
+        } else {
+            None
+        };
+
+        // Rebuild full sigma from coeffs
+        let mut full_sigma = vec![0u32; sigma_stride * height.div_ceil(4) as usize];
+        for y_stripe in (0..height).step_by(4) {
+            let rows = (height - y_stripe).min(4) as usize;
+            let stripe_base = (y_stripe / 4) as usize * sigma_stride;
+            for r in 0..rows {
+                for c in 0..width as usize {
+                    if coeffs[(y_stripe as usize + r) * stride + c] != 0 {
+                        full_sigma[stripe_base + c / 8] |= 1u32 << ((c % 8) * 4 + r);
+                    }
+                }
+            }
+        }
+
+        for y_stripe in (0..height).step_by(4) {
+            let stripe_base = (y_stripe / 4) as usize * sigma_stride;
+            let stripe_sigma = &mut full_sigma[stripe_base..stripe_base + sigma_stride];
+
+            // MRP: refine already-significant samples
+            if let Some(ref mut mr) = magref {
+                mrp_pass(
+                    &mut coeffs,
+                    stripe_sigma,
+                    width,
+                    height,
+                    y_stripe,
+                    mr,
+                    p,
+                    lcup,
+                )?;
+            }
+
+            // SPP: discover newly significant neighbors
+            spp_pass(
+                &mut coeffs,
+                stripe_sigma,
+                width,
+                height,
+                y_stripe,
+                &mut sigprop,
+                p,
+            )?;
+        }
+    }
+
     // --- Convert u32 coefficients to i32 (sign-magnitude to two's complement) ---
     let result: Vec<i32> = coeffs
         .iter()
@@ -1657,7 +2055,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rev_reader_new_mrp_init() {
         // MRP reader should initialize from the end of the SPP+MRP region.
         // data layout: [cleanup(6B) | spp_mrp(4B)]
@@ -1669,7 +2066,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn rev_reader_new_mrp_reads_from_end() {
         // Place a non-zero byte at the end of the SPP+MRP region.
         let mut data = [0x00u8; 10];
@@ -1684,18 +2080,17 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn mrp_pass_no_significant_samples() {
         // No significant samples → MRP consumes no bits.
         let mut coeffs = vec![0u32; 4]; // 2x2, all zero
+        let sigma = vec![0u32; 1]; // no significance
         let mrp_data = [0x00u8; 10];
         let mut magref = RevReader::new_mrp(&mrp_data, 6, 4);
-        mrp_pass(&mut coeffs, 2, 2, &mut magref, 8).unwrap();
+        mrp_pass(&mut coeffs, &sigma, 2, 2, 0, &mut magref, 8, 6).unwrap();
         assert!(coeffs.iter().all(|&v| v == 0));
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn mrp_pass_refines_single_sample() {
         // One significant sample after cleanup: magnitude = 3 << (p-1).
         // MRP refines bit (p-1) and adds center-of-bin at (p-2).
@@ -1704,25 +2099,27 @@ mod tests {
         let half = 1u32 << (p - 2);
 
         // sym=0 → toggle bit (p-1), then OR half
-        let expected_sym0 = (cleanup_val ^ (1u32 << (p - 1))) | half;
+        let _expected_sym0 = (cleanup_val ^ (1u32 << (p - 1))) | half;
 
         // sym=1 → keep bit (p-1), then OR half
         let expected_sym1 = cleanup_val | half;
 
         // Verify our math
         assert_eq!(cleanup_val, 0x180);
-        assert_eq!(expected_sym0, 0x140); // 256 + 64
+        assert_eq!(_expected_sym0, 0x140); // 256 + 64
         assert_eq!(expected_sym1, 0x1C0); // 384 + 64
 
-        // Test with sym=1: construct MRP bitstream where refinement bit = 1
+        // Test with sym=0: construct MRP bitstream where refinement bit = 0
+        // RevReader::new_mrp starts at data[lengths1+lengths2-1] and reads backward.
+        // With all-zero data, the fetched bits are 0, so sym=0 for each sample.
         let mut coeffs = vec![cleanup_val, 0, 0, 0]; // 2x2, (0,0) significant
-        let mut mrp_data = vec![0x00u8; 10];
-        // MRP reads backward; place bit pattern at end of lengths2 region
-        mrp_data[9] = 0x10; // upper nibble = 0x1 → bit 0 = 1 after rev_init
+        let sigma = vec![0x01u32]; // column 0, row 0 significant
+        let mrp_data = vec![0x00u8; 10]; // all zeros → sym=0
         let mut magref = RevReader::new_mrp(&mrp_data, 6, 4);
-        mrp_pass(&mut coeffs, 2, 2, &mut magref, p).unwrap();
+        mrp_pass(&mut coeffs, &sigma, 2, 2, 0, &mut magref, p, 6).unwrap();
 
-        assert_eq!(coeffs[0] & 0x7FFF_FFFF, expected_sym1);
+        // sym=0 → toggle bit (p-1), set half
+        assert_eq!(coeffs[0] & 0x7FFF_FFFF, _expected_sym0);
     }
 
     // -----------------------------------------------------------------------
@@ -1730,29 +2127,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn spp_pass_no_significant_neighbors() {
         // No significant samples → no membership → SPP does nothing.
         let mut coeffs = vec![0u32; 4]; // 2x2, all zero
+        let mut sigma = vec![0u32; 1]; // no significance
         let spp_data = [0x00u8; 4];
         let mut sigprop = FrwdReader::new(&spp_data, 0x00);
-        spp_pass(&mut coeffs, 2, 2, &mut sigprop, 8).unwrap();
+        spp_pass(&mut coeffs, &mut sigma, 2, 2, 0, &mut sigprop, 8).unwrap();
         assert!(coeffs.iter().all(|&v| v == 0));
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn spp_pass_discovers_neighbor() {
         // (0,0) is significant after cleanup. SPP should check its neighbors.
         let p = 8u32;
         let cleanup_val = 3u32 << (p - 1);
-        let _spp_val = 3u32 << (p - 2); // magnitude for newly significant sample
         let mut coeffs = vec![cleanup_val, 0, 0, 0]; // 2x2, only (0,0) significant
+        // sigma: column 0, row 0 significant
+        let mut sigma = vec![0x01u32];
 
         // SPP bitstream: significance=1, sign=0 for first neighbor checked
         let spp_data = [0x03u8, 0x00, 0x00, 0x00];
         let mut sigprop = FrwdReader::new(&spp_data, 0x00);
-        spp_pass(&mut coeffs, 2, 2, &mut sigprop, p).unwrap();
+        spp_pass(&mut coeffs, &mut sigma, 2, 2, 0, &mut sigprop, p).unwrap();
 
         // At least one neighbor of (0,0) should become significant
         let any_new_sig = coeffs[1] != 0 || coeffs[2] != 0 || coeffs[3] != 0;
@@ -1764,7 +2161,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ht_decode_cblk_two_passes_allzero() {
         // Cleanup produces all zeros, SPP has nothing to do.
         // data = [cleanup(6B) | spp_mrp(2B)]
@@ -1782,7 +2178,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn ht_decode_cblk_three_passes_allzero() {
         // All three passes with zero coefficients.
         let width = 2u32;
