@@ -234,6 +234,9 @@ fn mct_decode_real_kernel(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
 }
 
 /// Recursive parallel MCT dispatch for i32 slices.
+///
+/// Truncates all three slices to the minimum length before processing,
+/// so unequal-length slices never cause out-of-bounds access.
 #[cfg(feature = "parallel")]
 fn mct_par_i32(
     c0: &mut [i32],
@@ -242,6 +245,9 @@ fn mct_par_i32(
     kernel: fn(&mut [i32], &mut [i32], &mut [i32]),
 ) {
     let n = c0.len().min(c1.len()).min(c2.len());
+    let c0 = &mut c0[..n];
+    let c1 = &mut c1[..n];
+    let c2 = &mut c2[..n];
     if n <= MCT_PAR_THRESHOLD {
         kernel(c0, c1, c2);
         return;
@@ -257,6 +263,8 @@ fn mct_par_i32(
 }
 
 /// Recursive parallel MCT dispatch for f32 slices.
+///
+/// Truncates all three slices to the minimum length before processing.
 #[cfg(feature = "parallel")]
 fn mct_par_f32(
     c0: &mut [f32],
@@ -265,6 +273,9 @@ fn mct_par_f32(
     kernel: fn(&mut [f32], &mut [f32], &mut [f32]),
 ) {
     let n = c0.len().min(c1.len()).min(c2.len());
+    let c0 = &mut c0[..n];
+    let c1 = &mut c1[..n];
+    let c2 = &mut c2[..n];
     if n <= MCT_PAR_THRESHOLD {
         kernel(c0, c1, c2);
         return;
