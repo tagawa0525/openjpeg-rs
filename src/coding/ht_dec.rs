@@ -3,7 +3,7 @@
 // Implements the low-level bitstream reading primitives for HT JPEG 2000
 // codeblock decoding (ITU-T T.814).
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // MEL (Magnitude Event Limiter) decoder
@@ -66,7 +66,9 @@ impl<'a> MelDecoder<'a> {
             dec.unstuff = (d & 0xFF) == 0xFF;
         }
         // Push bits to MSB so the first bit to decode is at bit 63.
-        dec.tmp <<= 64 - dec.bits;
+        if dec.bits > 0 {
+            dec.tmp <<= 64 - dec.bits;
+        }
         dec
     }
 
@@ -153,7 +155,7 @@ impl<'a> MelDecoder<'a> {
                 self.bits -= eval + 1;
             }
             let shift = self.num_runs * 7;
-            self.runs &= !(0x3Fu64 << shift);
+            self.runs &= !(0x7Fu64 << shift);
             self.runs |= run << shift;
             self.num_runs += 1;
         }
@@ -308,7 +310,13 @@ impl<'a> RevReader<'a> {
 
     /// Consume `num_bits` from the buffer.
     pub fn advance(&mut self, num_bits: u32) -> Result<()> {
-        self.tmp >>= num_bits;
+        if num_bits > self.bits || num_bits >= 64 {
+            return Err(Error::InvalidInput(format!(
+                "RevReader::advance: num_bits ({num_bits}) exceeds available bits ({}) or >= 64",
+                self.bits
+            )));
+        }
+        self.tmp = self.tmp.checked_shr(num_bits).unwrap_or(0);
         self.bits -= num_bits;
         if self.bits < 32 {
             self.read();
@@ -444,7 +452,13 @@ impl<'a> FrwdReader<'a> {
 
     /// Consume `num_bits` from the buffer.
     pub fn advance(&mut self, num_bits: u32) -> Result<()> {
-        self.tmp >>= num_bits;
+        if num_bits > self.bits || num_bits >= 64 {
+            return Err(Error::InvalidInput(format!(
+                "FrwdReader::advance: num_bits ({num_bits}) exceeds available bits ({}) or >= 64",
+                self.bits
+            )));
+        }
+        self.tmp = self.tmp.checked_shr(num_bits).unwrap_or(0);
         self.bits -= num_bits;
         if self.bits < 32 {
             self.read();
