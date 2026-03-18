@@ -1376,6 +1376,21 @@ impl T1 {
 
         Ok(())
     }
+
+    /// Decode an HT (High Throughput) code-block (C: opj_t1_ht_decode_cblk).
+    ///
+    /// Dispatched when `cblksty & J2K_CCP_CBLKSTY_HT != 0`. HT codeblocks
+    /// have a different segment structure: segment 0 = cleanup (1 pass),
+    /// segment 1 = SPP+MRP (remaining passes).
+    #[allow(dead_code)]
+    pub fn decode_cblk_ht(
+        &mut self,
+        _segments: &[DecodeSegment],
+        _numbps: u32,
+        _roishift: u32,
+    ) -> Result<()> {
+        todo!("Phase 700c: T1 HT decode")
+    }
 }
 
 // --- Context helper functions ---
@@ -2298,5 +2313,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: HT decode dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t1_decode_cblk_ht_allzero() {
+        // HT decode of an all-zero codeblock should produce all-zero data.
+        let mut t1 = T1::new(false);
+        t1.allocate_buffers(2, 2).unwrap();
+
+        let data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        let segments = [DecodeSegment {
+            data: &data,
+            num_passes: 1,
+        }];
+
+        t1.decode_cblk_ht(&segments, 8, 0).unwrap();
+        assert!(t1.data.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t1_decode_cblk_ht_copies_to_data() {
+        // Verify HT decode results are stored in T1's data buffer.
+        let mut t1 = T1::new(false);
+        t1.allocate_buffers(4, 4).unwrap();
+
+        let data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        let segments = [DecodeSegment {
+            data: &data,
+            num_passes: 1,
+        }];
+
+        t1.decode_cblk_ht(&segments, 8, 0).unwrap();
+        assert_eq!(t1.data.len(), 16); // 4x4
     }
 }

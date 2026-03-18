@@ -326,6 +326,15 @@ impl<'a> RevReader<'a> {
         }
         Ok(())
     }
+
+    /// Create a reverse reader for the MRP bitstream (C: rev_init_mrp).
+    ///
+    /// MRP shares the `lengths2` byte region with SPP: SPP reads forward from
+    /// `data[lengths1..]`, MRP reads backward from `data[lengths1 + lengths2 - 1]`.
+    #[allow(dead_code)]
+    pub fn new_mrp(_data: &'a [u8], _lengths1: usize, _lengths2: usize) -> Self {
+        todo!("Phase 700c: MRP RevReader initialization")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +493,49 @@ pub fn count_leading_zeros(val: u32) -> u32 {
 #[inline]
 pub fn population_count(val: u32) -> u32 {
     val.count_ones()
+}
+
+// ---------------------------------------------------------------------------
+// SPP (Significance Propagation Pass)
+// ---------------------------------------------------------------------------
+
+/// Run the Significance Propagation Pass on the coefficient buffer.
+///
+/// SPP discovers new significant samples among neighbors of already-significant
+/// samples. For each candidate, reads 1 significance bit; if significant, reads
+/// 1 sign bit and writes `sign | (3 << (p-2))` to the sample.
+///
+/// C equivalent: inline code in `opj_t1_ht_decode_cblk` (SPP section).
+#[allow(dead_code)]
+fn spp_pass(
+    _coeffs: &mut [u32],
+    _width: u32,
+    _height: u32,
+    _sigprop: &mut FrwdReader,
+    _p: u32,
+) -> Result<()> {
+    todo!("Phase 700c: SPP pass")
+}
+
+// ---------------------------------------------------------------------------
+// MRP (Magnitude Refinement Pass)
+// ---------------------------------------------------------------------------
+
+/// Run the Magnitude Refinement Pass on the coefficient buffer.
+///
+/// For each sample significant after the cleanup pass, reads 1 refinement bit.
+/// If bit is 0, toggles bit (p-1); then sets bit (p-2) as new center-of-bin.
+///
+/// C equivalent: inline code in `opj_t1_ht_decode_cblk` (MRP section).
+#[allow(dead_code)]
+fn mrp_pass(
+    _coeffs: &mut [u32],
+    _width: u32,
+    _height: u32,
+    _magref: &mut RevReader,
+    _p: u32,
+) -> Result<()> {
+    todo!("Phase 700c: MRP pass")
 }
 
 // ---------------------------------------------------------------------------
@@ -1596,6 +1648,152 @@ mod tests {
             0x02, 0x00, // VLC segment (encodes scup=2)
         ];
         let result = ht_decode_cblk(&data, width, height, 1, &[6], zero_bplanes, p).unwrap();
+        assert_eq!(result.len(), 4);
+        assert!(result.iter().all(|&v| v == 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: RevReader MRP initialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn rev_reader_new_mrp_init() {
+        // MRP reader should initialize from the end of the SPP+MRP region.
+        // data layout: [cleanup(6B) | spp_mrp(4B)]
+        let data = [0x00u8; 10];
+        let reader = RevReader::new_mrp(&data, 6, 4);
+        let bits = reader.fetch();
+        // All zeros → fetch should return 0
+        assert_eq!(bits, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn rev_reader_new_mrp_reads_from_end() {
+        // Place a non-zero byte at the end of the SPP+MRP region.
+        let mut data = [0x00u8; 10];
+        data[9] = 0x50; // last byte of lengths2 region
+        let reader = RevReader::new_mrp(&data, 6, 4);
+        let bits = reader.fetch();
+        assert_ne!(bits, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: MRP pass
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mrp_pass_no_significant_samples() {
+        // No significant samples → MRP consumes no bits.
+        let mut coeffs = vec![0u32; 4]; // 2x2, all zero
+        let mrp_data = [0x00u8; 10];
+        let mut magref = RevReader::new_mrp(&mrp_data, 6, 4);
+        mrp_pass(&mut coeffs, 2, 2, &mut magref, 8).unwrap();
+        assert!(coeffs.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn mrp_pass_refines_single_sample() {
+        // One significant sample after cleanup: magnitude = 3 << (p-1).
+        // MRP refines bit (p-1) and adds center-of-bin at (p-2).
+        let p = 8u32;
+        let cleanup_val = 3u32 << (p - 1); // bits p and (p-1) set
+        let half = 1u32 << (p - 2);
+
+        // sym=0 → toggle bit (p-1), then OR half
+        let expected_sym0 = (cleanup_val ^ (1u32 << (p - 1))) | half;
+
+        // sym=1 → keep bit (p-1), then OR half
+        let expected_sym1 = cleanup_val | half;
+
+        // Verify our math
+        assert_eq!(cleanup_val, 0x180);
+        assert_eq!(expected_sym0, 0x140); // 256 + 64
+        assert_eq!(expected_sym1, 0x1C0); // 384 + 64
+
+        // Test with sym=1: construct MRP bitstream where refinement bit = 1
+        let mut coeffs = vec![cleanup_val, 0, 0, 0]; // 2x2, (0,0) significant
+        let mut mrp_data = vec![0x00u8; 10];
+        // MRP reads backward; place bit pattern at end of lengths2 region
+        mrp_data[9] = 0x10; // upper nibble = 0x1 → bit 0 = 1 after rev_init
+        let mut magref = RevReader::new_mrp(&mrp_data, 6, 4);
+        mrp_pass(&mut coeffs, 2, 2, &mut magref, p).unwrap();
+
+        assert_eq!(coeffs[0] & 0x7FFF_FFFF, expected_sym1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: SPP pass
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn spp_pass_no_significant_neighbors() {
+        // No significant samples → no membership → SPP does nothing.
+        let mut coeffs = vec![0u32; 4]; // 2x2, all zero
+        let spp_data = [0x00u8; 4];
+        let mut sigprop = FrwdReader::new(&spp_data, 0x00);
+        spp_pass(&mut coeffs, 2, 2, &mut sigprop, 8).unwrap();
+        assert!(coeffs.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn spp_pass_discovers_neighbor() {
+        // (0,0) is significant after cleanup. SPP should check its neighbors.
+        let p = 8u32;
+        let cleanup_val = 3u32 << (p - 1);
+        let _spp_val = 3u32 << (p - 2); // magnitude for newly significant sample
+        let mut coeffs = vec![cleanup_val, 0, 0, 0]; // 2x2, only (0,0) significant
+
+        // SPP bitstream: significance=1, sign=0 for first neighbor checked
+        let spp_data = [0x03u8, 0x00, 0x00, 0x00];
+        let mut sigprop = FrwdReader::new(&spp_data, 0x00);
+        spp_pass(&mut coeffs, 2, 2, &mut sigprop, p).unwrap();
+
+        // At least one neighbor of (0,0) should become significant
+        let any_new_sig = coeffs[1] != 0 || coeffs[2] != 0 || coeffs[3] != 0;
+        assert!(any_new_sig, "SPP should discover at least one neighbor");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Multi-pass HT codeblock decode integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn ht_decode_cblk_two_passes_allzero() {
+        // Cleanup produces all zeros, SPP has nothing to do.
+        // data = [cleanup(6B) | spp_mrp(2B)]
+        let width = 2u32;
+        let height = 2u32;
+        let p = 8u32;
+        let zero_bplanes = 7u32;
+
+        let mut data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        data.extend_from_slice(&[0x00, 0x00]); // SPP data (all zeros)
+
+        let result = ht_decode_cblk(&data, width, height, 2, &[6, 2], zero_bplanes, p).unwrap();
+        assert_eq!(result.len(), 4);
+        assert!(result.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn ht_decode_cblk_three_passes_allzero() {
+        // All three passes with zero coefficients.
+        let width = 2u32;
+        let height = 2u32;
+        let p = 8u32;
+        let zero_bplanes = 7u32;
+
+        let mut data: Vec<u8> = vec![0xFF, 0x00, 0x00, 0x00, 0x02, 0x00];
+        data.extend_from_slice(&[0x00, 0x00]); // SPP+MRP data
+
+        let result = ht_decode_cblk(&data, width, height, 3, &[6, 2], zero_bplanes, p).unwrap();
         assert_eq!(result.len(), 4);
         assert!(result.iter().all(|&v| v == 0));
     }
