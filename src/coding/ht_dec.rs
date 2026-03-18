@@ -345,7 +345,7 @@ impl<'a> RevReader<'a> {
             unstuff: true, // always starts true for MRP
         };
 
-        if lengths2 == 0 {
+        if lengths2 == 0 || lengths1 + lengths2 > data.len() {
             return reader;
         }
 
@@ -627,6 +627,11 @@ fn spp_pass(
     sigprop: &mut FrwdReader,
     p: u32,
 ) -> Result<()> {
+    if p < 2 {
+        return Err(Error::InvalidInput(format!(
+            "spp_pass: p ({p}) must be >= 2 for SPP"
+        )));
+    }
     let stride = width as usize;
     let val = 3u32 << (p - 2); // magnitude for newly significant samples
     let rows_in_stripe = (height - y_start).min(4) as usize;
@@ -646,7 +651,7 @@ fn spp_pass(
         // Phase 1: significance decisions + dynamic propagation
         let mut new_sig = 0u32;
         let mut cwd = sigprop.fetch();
-        let mut cnt = 0u32;
+        let mut sig_cnt = 0u32;
 
         for j in 0..cols_here {
             for row in 0..rows_in_stripe {
@@ -667,26 +672,33 @@ fn spp_pass(
                         );
                     }
                     cwd >>= 1;
-                    cnt += 1;
+                    sig_cnt += 1;
                 }
             }
         }
 
-        // Phase 2: read signs for newly significant samples
+        // Consume significance bits before fetching sign bits
+        if sig_cnt > 0 {
+            sigprop.advance(sig_cnt)?;
+        }
+
+        // Phase 2: read signs for newly significant samples (fresh fetch)
+        let mut sign_cwd = sigprop.fetch();
+        let mut sign_cnt = 0u32;
         for j in 0..cols_here {
             for row in 0..rows_in_stripe {
                 let sample_mask = 1u32 << (j * 4 + row);
                 if new_sig & sample_mask != 0 {
                     let idx = (y_start as usize + row) * stride + x as usize + j;
-                    coeffs[idx] = ((cwd & 1) << 31) | val;
-                    cwd >>= 1;
-                    cnt += 1;
+                    coeffs[idx] = ((sign_cwd & 1) << 31) | val;
+                    sign_cwd >>= 1;
+                    sign_cnt += 1;
                 }
             }
         }
 
-        if cnt > 0 {
-            sigprop.advance(cnt)?;
+        if sign_cnt > 0 {
+            sigprop.advance(sign_cnt)?;
         }
 
         // Update sigma with newly significant samples
@@ -822,6 +834,11 @@ fn mrp_pass(
     p: u32,
     lengths1: usize,
 ) -> Result<()> {
+    if p < 2 {
+        return Err(Error::InvalidInput(format!(
+            "mrp_pass: p ({p}) must be >= 2 for MRP"
+        )));
+    }
     let stride = width as usize;
     let half = 1u32 << (p - 2);
     let rows_in_stripe = (height - y_start).min(4) as usize;
@@ -1684,7 +1701,13 @@ pub fn ht_decode_cblk(
     }
 
     // --- SPP and MRP passes (num_passes > 1) ---
-    if num_passes > 1 && lengths.len() >= 2 {
+    if num_passes > 1 && lengths.len() < 2 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: num_passes={num_passes} requires lengths.len() >= 2, got {}",
+            lengths.len()
+        )));
+    }
+    if num_passes > 1 {
         let lengths2 = lengths[1] as usize;
         if lcup + lengths2 > data.len() {
             return Err(Error::InvalidInput(format!(
