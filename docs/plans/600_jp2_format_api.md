@@ -1,6 +1,6 @@
 # Phase 600: JP2ファイルフォーマット + 公開API
 
-Status: IN_PROGRESS (600a-600c done, 600d remaining)
+Status: IMPLEMENTED
 
 ## Context
 
