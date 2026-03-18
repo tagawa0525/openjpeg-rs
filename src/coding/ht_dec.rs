@@ -486,6 +486,842 @@ pub fn population_count(val: u32) -> u32 {
     val.count_ones()
 }
 
+// ---------------------------------------------------------------------------
+// UVLC decoders (ITU-T T.814, Table 3)
+// ---------------------------------------------------------------------------
+
+/// UVLC prefix decoder table.
+///
+/// 8 entries for prefix codewords: xx1, x10, 100, 000.
+/// Each entry packs:
+///   - bits [1:0]: prefix length (number of consumed bits)
+///   - bits [4:2]: suffix length
+///   - bits [7:5]: prefix value (u_pfx)
+static UVLC_DEC: [u32; 8] = [
+    0xB3, // 000 → prefix "000": len=3, suffix_len=5, u_pfx=5
+    0x21, // 001 → prefix "1":   len=1, suffix_len=0, u_pfx=1
+    0x42, // 010 → prefix "01":  len=2, suffix_len=0, u_pfx=2
+    0x21, // 011 → prefix "1":   len=1, suffix_len=0, u_pfx=1
+    0x67, // 100 → prefix "001": len=3, suffix_len=1, u_pfx=3
+    0x21, // 101 → prefix "1":   len=1, suffix_len=0, u_pfx=1
+    0x42, // 110 → prefix "01":  len=2, suffix_len=0, u_pfx=2
+    0x21, // 111 → prefix "1":   len=1, suffix_len=0, u_pfx=1
+];
+
+/// Decode initial UVLC to get the u values for a quad pair (first 2 rows).
+///
+/// Returns `(consumed_bits, [u0, u1])` where u values include +1 for kappa.
+///
+/// Modes:
+/// - 0: both u_off are 0 → u = [1, 1]
+/// - 1: u_off = [1, 0] → decode one symbol for u[0]
+/// - 2: u_off = [0, 1] → decode one symbol for u[1]
+/// - 3: both u_off = 1, MEL event = 0 → decode two symbols (space-saving branch)
+/// - 4: both u_off = 1, MEL event = 1 → decode two symbols, add +2 each
+pub(crate) fn decode_init_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
+    let mut consumed_bits = 0u32;
+    let mut u = [1u32, 1u32];
+
+    if mode == 0 {
+        // Both u_off are 0; kappa is 1 for initial line.
+        // consumed_bits = 0, u = [1, 1]
+    } else if mode <= 2 {
+        // u_off are either 01 or 10: decode one symbol.
+        let d = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len = d & 0x3;
+        let suffix_len = (d >> 2) & 0x7;
+        consumed_bits = prefix_len + suffix_len;
+        let d_val = (d >> 5) + ((vlc >> prefix_len) & ((1u32 << suffix_len) - 1));
+        if mode == 1 {
+            u[0] = d_val + 1;
+            u[1] = 1;
+        } else {
+            u[0] = 1;
+            u[1] = d_val + 1;
+        }
+    } else if mode == 3 {
+        // Both u_off are 1, MEL event is 0.
+        let d1 = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len1 = d1 & 0x3;
+        let mut vlc = vlc >> prefix_len1;
+        consumed_bits += prefix_len1;
+
+        if prefix_len1 > 2 {
+            // Space-saving branch: u[1] prefix is encoded as a single bit.
+            u[1] = (vlc & 1) + 1 + 1; // +1 for kappa
+            consumed_bits += 1;
+            vlc >>= 1;
+
+            let suffix_len1 = (d1 >> 2) & 0x7;
+            consumed_bits += suffix_len1;
+            let d1_val = (d1 >> 5) + (vlc & ((1u32 << suffix_len1) - 1));
+            u[0] = d1_val + 1; // +1 for kappa
+        } else {
+            // Decode two separate symbols.
+            let d2 = UVLC_DEC[(vlc & 0x7) as usize];
+            let prefix_len2 = d2 & 0x3;
+            vlc >>= prefix_len2;
+            consumed_bits += prefix_len2;
+
+            let suffix_len1 = (d1 >> 2) & 0x7;
+            consumed_bits += suffix_len1;
+            let d1_val = (d1 >> 5) + (vlc & ((1u32 << suffix_len1) - 1));
+            u[0] = d1_val + 1;
+            vlc >>= suffix_len1;
+
+            let suffix_len2 = (d2 >> 2) & 0x7;
+            consumed_bits += suffix_len2;
+            let d2_val = (d2 >> 5) + (vlc & ((1u32 << suffix_len2) - 1));
+            u[1] = d2_val + 1;
+        }
+    } else if mode == 4 {
+        // Both u_off are 1, MEL event is 1.
+        let d1 = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len1 = d1 & 0x3;
+        let mut vlc = vlc >> prefix_len1;
+        consumed_bits += prefix_len1;
+
+        let d2 = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len2 = d2 & 0x3;
+        vlc >>= prefix_len2;
+        consumed_bits += prefix_len2;
+
+        let suffix_len1 = (d1 >> 2) & 0x7;
+        consumed_bits += suffix_len1;
+        let d1_val = (d1 >> 5) + (vlc & ((1u32 << suffix_len1) - 1));
+        u[0] = d1_val + 3; // add 2 + kappa(=1)
+        vlc >>= suffix_len1;
+
+        let suffix_len2 = (d2 >> 2) & 0x7;
+        consumed_bits += suffix_len2;
+        let d2_val = (d2 >> 5) + (vlc & ((1u32 << suffix_len2) - 1));
+        u[1] = d2_val + 3; // add 2 + kappa(=1)
+    }
+
+    (consumed_bits, u)
+}
+
+/// Decode non-initial UVLC to get the u values for a quad pair (rows > 2).
+///
+/// Returns `(consumed_bits, [u0, u1])` where u values include +1 for kappa.
+///
+/// Modes 0-3 only (no mode 4). Mode 3 always decodes two separate symbols
+/// (no space-saving branch).
+pub(crate) fn decode_noninit_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
+    let mut consumed_bits = 0u32;
+    let mut u = [1u32, 1u32];
+
+    if mode == 0 {
+        // Both u_off are 0; u = [1, 1] for kappa.
+    } else if mode <= 2 {
+        // u_off are either 01 or 10: decode one symbol.
+        let d = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len = d & 0x3;
+        let suffix_len = (d >> 2) & 0x7;
+        consumed_bits = prefix_len + suffix_len;
+        let d_val = (d >> 5) + ((vlc >> prefix_len) & ((1u32 << suffix_len) - 1));
+        if mode == 1 {
+            u[0] = d_val + 1;
+            u[1] = 1;
+        } else {
+            u[0] = 1;
+            u[1] = d_val + 1;
+        }
+    } else if mode == 3 {
+        // Both u_off are 1: decode two separate symbols (no space-saving).
+        let d1 = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len1 = d1 & 0x3;
+        let mut vlc = vlc >> prefix_len1;
+        consumed_bits += prefix_len1;
+
+        let d2 = UVLC_DEC[(vlc & 0x7) as usize];
+        let prefix_len2 = d2 & 0x3;
+        vlc >>= prefix_len2;
+        consumed_bits += prefix_len2;
+
+        let suffix_len1 = (d1 >> 2) & 0x7;
+        consumed_bits += suffix_len1;
+        let d1_val = (d1 >> 5) + (vlc & ((1u32 << suffix_len1) - 1));
+        u[0] = d1_val + 1;
+        vlc >>= suffix_len1;
+
+        let suffix_len2 = (d2 >> 2) & 0x7;
+        consumed_bits += suffix_len2;
+        let d2_val = (d2 >> 5) + (vlc & ((1u32 << suffix_len2) - 1));
+        u[1] = d2_val + 1;
+    }
+
+    (consumed_bits, u)
+}
+
+// ---------------------------------------------------------------------------
+// HT codeblock decode (cleanup pass)
+// ---------------------------------------------------------------------------
+
+use crate::coding::ht_luts::{VLC_TBL0, VLC_TBL1};
+
+/// Decode a single MagSgn sample and return the decoded coefficient value.
+///
+/// Given `u_q` value, EMB bit `emb_k_bit`, EMB bit `emb_1_bit`,
+/// and bit-depth parameter `p`, this reads the MagSgn
+/// bitstream and returns the coefficient.
+#[inline]
+fn decode_one_sample(
+    magsgn: &mut FrwdReader<'_>,
+    u_q: u32,
+    emb_k_bit: u32,
+    emb_1_bit: u32,
+    p: u32,
+) -> Result<u32> {
+    let ms_val = magsgn.fetch();
+    let m_n = u_q - emb_k_bit;
+    magsgn.advance(m_n)?;
+    let val = ms_val << 31; // sign bit
+    let mut v_n = if m_n < 32 {
+        ms_val & ((1u32 << m_n) - 1)
+    } else {
+        ms_val
+    }; // keep only m_n bits
+    v_n |= emb_1_bit << m_n; // add EMB e_1 as MSB
+    v_n |= 1; // add center of bin
+    // v_n = 2*(mu-1)+0.5, add 2 to get 2*mu+0.5, shift up by (p-1)
+    Ok(val | ((v_n + 2) << (p - 1)))
+}
+
+/// Decode one HT codeblock (cleanup pass).
+///
+/// # Arguments
+/// * `data`         - Codeblock compressed data (all passes concatenated)
+/// * `width`        - Codeblock width in samples
+/// * `height`       - Codeblock height in samples
+/// * `num_passes`   - Number of coding passes (1-3)
+/// * `lengths`      - Pass lengths: `[cleanup_len, optional_spp_len, optional_mrp_len]`
+/// * `zero_bplanes` - Number of zero bit planes
+/// * `p`            - Bit depth parameter (numbps)
+///
+/// # Returns
+/// Decoded coefficient array of size `width * height`, stored row-major.
+///
+/// Currently implements the cleanup pass only. SPP/MRP passes will be
+/// added in Phase 700c.
+pub fn ht_decode_cblk(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    num_passes: u32,
+    lengths: &[u32],
+    zero_bplanes: u32,
+    p: u32,
+) -> Result<Vec<i32>> {
+    // --- Validate inputs ---
+    if num_passes == 0 || num_passes > 3 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: num_passes ({num_passes}) must be 1, 2, or 3"
+        )));
+    }
+    if width == 0 || height == 0 {
+        return Err(Error::InvalidInput(
+            "ht_decode_cblk: width and height must be > 0".to_string(),
+        ));
+    }
+    if width > 1024 || height > 1024 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: dimensions ({width}x{height}) exceed maximum 1024x1024"
+        )));
+    }
+    if p > 31 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: bit depth p ({p}) must be <= 31"
+        )));
+    }
+    if p == 0 {
+        // No bits to decode; return all zeros.
+        return Ok(vec![0i32; (width * height) as usize]);
+    }
+    if lengths.is_empty() {
+        return Err(Error::InvalidInput(
+            "ht_decode_cblk: lengths must not be empty".to_string(),
+        ));
+    }
+
+    let lcup = lengths[0] as usize; // cleanup pass length
+    if zero_bplanes > p {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: zero_bplanes ({zero_bplanes}) must be <= p ({p})"
+        )));
+    }
+    let zero_bplanes_p1 = zero_bplanes.checked_add(1).ok_or_else(|| {
+        Error::InvalidInput("ht_decode_cblk: zero_bplanes + 1 overflows u32".to_string())
+    })?;
+    let stride = width as usize;
+
+    // --- Parse scup (last 2 bytes of cleanup segment) ---
+    if lcup < 2 || lcup > data.len() {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: invalid cleanup length ({lcup})"
+        )));
+    }
+    let scup = ((data[lcup - 1] as usize) << 4) + ((data[lcup - 2] as usize) & 0xF);
+    if scup < 2 || scup > lcup || scup > 4079 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: invalid scup ({scup}), must be 2 <= scup <= min(lcup={lcup}, 4079)"
+        )));
+    }
+
+    // --- Initialize bitstream readers ---
+    // MEL bitstream: starts at beginning of data, runs for lcup-scup bytes.
+    let mel_data = &data[..lcup - scup];
+    let mut mel = MelDecoder::new(mel_data);
+
+    // VLC bitstream: reverse reader from end of cleanup segment.
+    // The VLC data is the last scup bytes of the cleanup segment.
+    let vlc_data = &data[lcup - scup..lcup];
+    let mut vlc = RevReader::new(vlc_data);
+
+    // MagSgn bitstream: forward reader, same data as MEL, fill = 0xFF.
+    let magsgn_data = &data[..lcup - scup];
+    let mut magsgn = FrwdReader::new(magsgn_data, 0xFF);
+
+    // --- Allocate output and working buffers ---
+    let total_samples = (width * height) as usize;
+    let mut coeffs = vec![0u32; total_samples];
+
+    // sigma buffers: each entry covers 8 columns x 4 rows packed into nibbles.
+    // We need ceil(width/8) + 1 entries per buffer.
+    let sigma_buf_len = (width as usize / 8) + 2;
+    let mut sigma1 = vec![0u32; sigma_buf_len];
+    let mut sigma2 = vec![0u32; sigma_buf_len];
+
+    // Line state: one byte per 2 columns (quad), need width/2 + 2.
+    let line_state_len = (width as usize) / 2 + 2;
+    let mut line_state = vec![0u8; line_state_len];
+
+    // --- Cleanup pass: initial 2 rows ---
+    let mut lsp_idx: usize = 0; // index into line_state
+    line_state[0] = 0;
+    let mut run = mel.decode_run()? as i32;
+    let mut qinf = [0u32; 2];
+    let mut c_q: u32 = 0; // context for quad
+    let mut sp: usize = 0; // index into coeffs (first row, moving right)
+
+    // sip = pointer into sigma1, sip_shift tracks nibble position
+    let mut sip_idx: usize = 0;
+    let mut sip_shift: u32 = 0;
+    let width_i = width as i32;
+    let height_i = height as i32;
+
+    for x in (0..width_i).step_by(4) {
+        // --- Decode VLC for first quad ---
+        let mut vlc_val = vlc.fetch();
+
+        qinf[0] = VLC_TBL0[((c_q << 7) | (vlc_val & 0x7F)) as usize] as u32;
+
+        if c_q == 0 {
+            run -= 2;
+            qinf[0] = if run == -1 { qinf[0] } else { 0 };
+            if run < 0 {
+                run = mel.decode_run()? as i32;
+            }
+        }
+
+        // Prepare context for next quad (eqn. 1 in ITU T.814)
+        c_q = ((qinf[0] & 0x10) >> 4) | ((qinf[0] & 0xE0) >> 5);
+
+        // Consume VLC bits
+        let vlc_bits0 = qinf[0] & 0x7;
+        if vlc_bits0 > 0 {
+            vlc.advance(vlc_bits0)?;
+        }
+        vlc_val = vlc.fetch();
+
+        // Update sigma
+        sigma1[sip_idx] |= (((qinf[0] & 0x30) >> 4) | ((qinf[0] & 0xC0) >> 2)) << sip_shift;
+
+        // --- Decode VLC for second quad ---
+        qinf[1] = 0;
+        if x + 2 < width_i {
+            qinf[1] = VLC_TBL0[((c_q << 7) | (vlc_val & 0x7F)) as usize] as u32;
+
+            if c_q == 0 {
+                run -= 2;
+                qinf[1] = if run == -1 { qinf[1] } else { 0 };
+                if run < 0 {
+                    run = mel.decode_run()? as i32;
+                }
+            }
+
+            c_q = ((qinf[1] & 0x10) >> 4) | ((qinf[1] & 0xE0) >> 5);
+
+            let vlc_bits1 = qinf[1] & 0x7;
+            if vlc_bits1 > 0 {
+                vlc.advance(vlc_bits1)?;
+            }
+            vlc_val = vlc.fetch();
+        }
+
+        // Update sigma for second quad
+        sigma1[sip_idx] |= ((qinf[1] & 0x30) | ((qinf[1] & 0xC0) << 2)) << (4 + sip_shift);
+
+        if x & 0x7 != 0 {
+            sip_idx += 1;
+        }
+        sip_shift ^= 0x10;
+
+        // --- Retrieve u values ---
+        let uvlc_mode = ((qinf[0] & 0x8) >> 3) | ((qinf[1] & 0x8) >> 2);
+        let uvlc_mode = if uvlc_mode == 3 {
+            run -= 2;
+            let m = uvlc_mode + if run == -1 { 1 } else { 0 };
+            if run < 0 {
+                run = mel.decode_run()? as i32;
+            }
+            m
+        } else {
+            uvlc_mode
+        };
+
+        let (consumed_bits, u_q) = decode_init_uvlc(vlc_val, uvlc_mode);
+        if u_q[0] > zero_bplanes_p1 || u_q[1] > zero_bplanes_p1 {
+            return Err(Error::InvalidInput(
+                "ht_decode_cblk: U_q exceeds zero bitplanes + 1".to_string(),
+            ));
+        }
+
+        if consumed_bits > 0 {
+            vlc.advance(consumed_bits)?;
+        }
+
+        // --- Decode MagSgn samples ---
+        let mut locs: u32 = 0xFF;
+        if x + 4 > width_i {
+            locs >>= ((x + 4 - width_i) << 1) as u32;
+        }
+        if height_i <= 1 {
+            locs &= 0x55; // only odd-numbered locs (row 0 only)
+        }
+
+        // Check for out-of-bounds significance
+        if (((qinf[0] & 0xF0) >> 4) | (qinf[1] & 0xF0)) & !locs != 0 {
+            return Err(Error::InvalidInput(
+                "ht_decode_cblk: VLC produces significant samples outside codeblock".to_string(),
+            ));
+        }
+
+        // First quad, sample 0 (row 0, col x)
+        if qinf[0] & 0x10 != 0 {
+            coeffs[sp] = decode_one_sample(
+                &mut magsgn,
+                u_q[0],
+                (qinf[0] >> 12) & 1,
+                (qinf[0] & 0x100) >> 8,
+                p,
+            )?;
+        }
+
+        // First quad, sample 1 (row 1, col x)
+        if qinf[0] & 0x20 != 0 {
+            coeffs[sp + stride] = decode_one_sample(
+                &mut magsgn,
+                u_q[0],
+                (qinf[0] >> 13) & 1,
+                (qinf[0] & 0x200) >> 9,
+                p,
+            )?;
+
+            // Update line_state
+            let t = line_state[lsp_idx] & 0x7F;
+            // Recompute v_n for line state (we need the v_n that was just decoded)
+            // Use the coefficient we just stored to extract v_n
+            let stored = coeffs[sp + stride];
+            let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1); // extract (v_n + 2)
+            let v_n = v_n_full.saturating_sub(2);
+            let e_n = 32 - v_n.leading_zeros();
+            line_state[lsp_idx] = 0x80 | if t as u32 > e_n { t } else { e_n as u8 };
+        }
+
+        lsp_idx += 1;
+        sp += 1;
+
+        // First quad, sample 2 (row 0, col x+1)
+        if qinf[0] & 0x40 != 0 {
+            coeffs[sp] = decode_one_sample(
+                &mut magsgn,
+                u_q[0],
+                (qinf[0] >> 14) & 1,
+                (qinf[0] & 0x400) >> 10,
+                p,
+            )?;
+        }
+
+        // First quad, sample 3 (row 1, col x+1)
+        line_state[lsp_idx] = 0;
+        if qinf[0] & 0x80 != 0 {
+            coeffs[sp + stride] = decode_one_sample(
+                &mut magsgn,
+                u_q[0],
+                (qinf[0] >> 15) & 1,
+                (qinf[0] & 0x800) >> 11,
+                p,
+            )?;
+
+            let stored = coeffs[sp + stride];
+            let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+            let v_n = v_n_full.saturating_sub(2);
+            let e_nw = 32 - v_n.leading_zeros();
+            line_state[lsp_idx] = 0x80 | e_nw as u8;
+        }
+
+        sp += 1;
+
+        // Second quad, sample 0 (row 0, col x+2)
+        if qinf[1] & 0x10 != 0 {
+            coeffs[sp] = decode_one_sample(
+                &mut magsgn,
+                u_q[1],
+                (qinf[1] >> 12) & 1,
+                (qinf[1] & 0x100) >> 8,
+                p,
+            )?;
+        }
+
+        // Second quad, sample 1 (row 1, col x+2)
+        if qinf[1] & 0x20 != 0 {
+            coeffs[sp + stride] = decode_one_sample(
+                &mut magsgn,
+                u_q[1],
+                (qinf[1] >> 13) & 1,
+                (qinf[1] & 0x200) >> 9,
+                p,
+            )?;
+
+            let t = line_state[lsp_idx] & 0x7F;
+            let stored = coeffs[sp + stride];
+            let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+            let v_n = v_n_full.saturating_sub(2);
+            let e_n = 32 - v_n.leading_zeros();
+            line_state[lsp_idx] = 0x80 | if t as u32 > e_n { t } else { e_n as u8 };
+        }
+
+        lsp_idx += 1;
+        sp += 1;
+
+        // Second quad, sample 2 (row 0, col x+3)
+        if qinf[1] & 0x40 != 0 {
+            coeffs[sp] = decode_one_sample(
+                &mut magsgn,
+                u_q[1],
+                (qinf[1] >> 14) & 1,
+                (qinf[1] & 0x400) >> 10,
+                p,
+            )?;
+        }
+
+        // Second quad, sample 3 (row 1, col x+3)
+        line_state[lsp_idx] = 0;
+        if qinf[1] & 0x80 != 0 {
+            coeffs[sp + stride] = decode_one_sample(
+                &mut magsgn,
+                u_q[1],
+                (qinf[1] >> 15) & 1,
+                (qinf[1] & 0x800) >> 11,
+                p,
+            )?;
+
+            let stored = coeffs[sp + stride];
+            let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+            let v_n = v_n_full.saturating_sub(2);
+            let e_nw = 32 - v_n.leading_zeros();
+            line_state[lsp_idx] = 0x80 | e_nw as u8;
+        }
+
+        sp += 1;
+    }
+
+    // --- Cleanup pass: non-initial rows (y = 2, 4, 6, ...) ---
+    let mut y = 2i32;
+    while y < height_i {
+        sip_shift ^= 0x2;
+        sip_shift &= 0xFFFF_FFEFu32;
+        let use_sigma2 = y & 0x4 != 0;
+
+        lsp_idx = 0;
+        let ls0_saved = line_state[0];
+        let mut ls0 = ls0_saved;
+        line_state[0] = 0;
+        sp = (y as usize) * stride;
+        c_q = 0;
+        sip_idx = 0;
+
+        for x in (0..width_i).step_by(4) {
+            // --- First quad context and VLC ---
+            c_q |= (ls0 >> 7) as u32;
+            c_q |= ((line_state[lsp_idx + 1] >> 5) & 0x4) as u32;
+
+            let mut vlc_val = vlc.fetch();
+            qinf[0] = VLC_TBL1[((c_q << 7) | (vlc_val & 0x7F)) as usize] as u32;
+
+            if c_q == 0 {
+                run -= 2;
+                qinf[0] = if run == -1 { qinf[0] } else { 0 };
+                if run < 0 {
+                    run = mel.decode_run()? as i32;
+                }
+            }
+
+            // Prepare context: sigma^W | sigma^SW
+            c_q = ((qinf[0] & 0x40) >> 5) | ((qinf[0] & 0x80) >> 6);
+
+            let vlc_bits0 = qinf[0] & 0x7;
+            if vlc_bits0 > 0 {
+                vlc.advance(vlc_bits0)?;
+            }
+            vlc_val = vlc.fetch();
+
+            // Update sigma
+            let sip_buf = if use_sigma2 { &mut sigma2 } else { &mut sigma1 };
+            sip_buf[sip_idx] |= (((qinf[0] & 0x30) >> 4) | ((qinf[0] & 0xC0) >> 2)) << sip_shift;
+
+            // --- Second quad context and VLC ---
+            qinf[1] = 0;
+            if x + 2 < width_i {
+                c_q |= (line_state[lsp_idx + 1] >> 7) as u32;
+                c_q |= ((line_state[lsp_idx + 2] >> 5) & 0x4) as u32;
+
+                qinf[1] = VLC_TBL1[((c_q << 7) | (vlc_val & 0x7F)) as usize] as u32;
+
+                if c_q == 0 {
+                    run -= 2;
+                    qinf[1] = if run == -1 { qinf[1] } else { 0 };
+                    if run < 0 {
+                        run = mel.decode_run()? as i32;
+                    }
+                }
+
+                c_q = ((qinf[1] & 0x40) >> 5) | ((qinf[1] & 0x80) >> 6);
+
+                let vlc_bits1 = qinf[1] & 0x7;
+                if vlc_bits1 > 0 {
+                    vlc.advance(vlc_bits1)?;
+                }
+                vlc_val = vlc.fetch();
+            }
+
+            // Update sigma for second quad
+            let sip_buf = if use_sigma2 { &mut sigma2 } else { &mut sigma1 };
+            sip_buf[sip_idx] |= ((qinf[1] & 0x30) | ((qinf[1] & 0xC0) << 2)) << (4 + sip_shift);
+
+            if x & 0x7 != 0 {
+                sip_idx += 1;
+            }
+            sip_shift ^= 0x10;
+
+            // --- Retrieve u values ---
+            let uvlc_mode = ((qinf[0] & 0x8) >> 3) | ((qinf[1] & 0x8) >> 2);
+            let (consumed_bits, mut u_q) = decode_noninit_uvlc(vlc_val, uvlc_mode);
+            if consumed_bits > 0 {
+                vlc.advance(consumed_bits)?;
+            }
+
+            // Calculate E^max and add to U_q (eqns 5 and 6 in ITU T.814)
+            if (qinf[0] & 0xF0) & ((qinf[0] & 0xF0).wrapping_sub(1)) != 0 {
+                let e = (ls0 & 0x7F) as u32;
+                let e = e.max((line_state[lsp_idx + 1] & 0x7F) as u32);
+                u_q[0] += e.saturating_sub(2);
+            }
+            if (qinf[1] & 0xF0) & ((qinf[1] & 0xF0).wrapping_sub(1)) != 0 {
+                let e = (line_state[lsp_idx + 1] & 0x7F) as u32;
+                let e = e.max((line_state[lsp_idx + 2] & 0x7F) as u32);
+                u_q[1] += e.saturating_sub(2);
+            }
+
+            if u_q[0] > zero_bplanes_p1 || u_q[1] > zero_bplanes_p1 {
+                return Err(Error::InvalidInput(
+                    "ht_decode_cblk: U_q exceeds zero bitplanes + 1".to_string(),
+                ));
+            }
+
+            ls0 = line_state[lsp_idx + 2];
+            line_state[lsp_idx + 1] = 0;
+            line_state[lsp_idx + 2] = 0;
+
+            // --- Decode MagSgn samples ---
+            let mut locs: u32 = 0xFF;
+            if x + 4 > width_i {
+                locs >>= ((x + 4 - width_i) << 1) as u32;
+            }
+            if y + 2 > height_i {
+                locs &= 0x55;
+            }
+
+            if (((qinf[0] & 0xF0) >> 4) | (qinf[1] & 0xF0)) & !locs != 0 {
+                return Err(Error::InvalidInput(
+                    "ht_decode_cblk: VLC produces significant samples outside codeblock"
+                        .to_string(),
+                ));
+            }
+
+            // First quad, sample 0
+            if qinf[0] & 0x10 != 0 {
+                coeffs[sp] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[0],
+                    (qinf[0] >> 12) & 1,
+                    (qinf[0] & 0x100) >> 8,
+                    p,
+                )?;
+            } else if locs & 0x1 != 0 {
+                coeffs[sp] = 0;
+            }
+
+            // First quad, sample 1
+            if qinf[0] & 0x20 != 0 {
+                coeffs[sp + stride] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[0],
+                    (qinf[0] >> 13) & 1,
+                    (qinf[0] & 0x200) >> 9,
+                    p,
+                )?;
+
+                let t = line_state[lsp_idx] & 0x7F;
+                let stored = coeffs[sp + stride];
+                let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+                let v_n = v_n_full.saturating_sub(2);
+                let e_n = 32 - v_n.leading_zeros();
+                line_state[lsp_idx] = 0x80 | if t as u32 > e_n { t } else { e_n as u8 };
+            } else if locs & 0x2 != 0 {
+                coeffs[sp + stride] = 0;
+            }
+
+            lsp_idx += 1;
+            sp += 1;
+
+            // First quad, sample 2
+            if qinf[0] & 0x40 != 0 {
+                coeffs[sp] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[0],
+                    (qinf[0] >> 14) & 1,
+                    (qinf[0] & 0x400) >> 10,
+                    p,
+                )?;
+            } else if locs & 0x4 != 0 {
+                coeffs[sp] = 0;
+            }
+
+            // First quad, sample 3
+            if qinf[0] & 0x80 != 0 {
+                coeffs[sp + stride] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[0],
+                    (qinf[0] >> 15) & 1,
+                    (qinf[0] & 0x800) >> 11,
+                    p,
+                )?;
+
+                let stored = coeffs[sp + stride];
+                let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+                let v_n = v_n_full.saturating_sub(2);
+                let e_nw = 32 - v_n.leading_zeros();
+                line_state[lsp_idx] = 0x80 | e_nw as u8;
+            } else if locs & 0x8 != 0 {
+                coeffs[sp + stride] = 0;
+            }
+
+            sp += 1;
+
+            // Second quad, sample 0
+            if qinf[1] & 0x10 != 0 {
+                coeffs[sp] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[1],
+                    (qinf[1] >> 12) & 1,
+                    (qinf[1] & 0x100) >> 8,
+                    p,
+                )?;
+            } else if locs & 0x10 != 0 {
+                coeffs[sp] = 0;
+            }
+
+            // Second quad, sample 1
+            if qinf[1] & 0x20 != 0 {
+                coeffs[sp + stride] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[1],
+                    (qinf[1] >> 13) & 1,
+                    (qinf[1] & 0x200) >> 9,
+                    p,
+                )?;
+
+                let t = line_state[lsp_idx] & 0x7F;
+                let stored = coeffs[sp + stride];
+                let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+                let v_n = v_n_full.saturating_sub(2);
+                let e_n = 32 - v_n.leading_zeros();
+                line_state[lsp_idx] = 0x80 | if t as u32 > e_n { t } else { e_n as u8 };
+            } else if locs & 0x20 != 0 {
+                coeffs[sp + stride] = 0;
+            }
+
+            lsp_idx += 1;
+            sp += 1;
+
+            // Second quad, sample 2
+            if qinf[1] & 0x40 != 0 {
+                coeffs[sp] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[1],
+                    (qinf[1] >> 14) & 1,
+                    (qinf[1] & 0x400) >> 10,
+                    p,
+                )?;
+            } else if locs & 0x40 != 0 {
+                coeffs[sp] = 0;
+            }
+
+            // Second quad, sample 3
+            if qinf[1] & 0x80 != 0 {
+                coeffs[sp + stride] = decode_one_sample(
+                    &mut magsgn,
+                    u_q[1],
+                    (qinf[1] >> 15) & 1,
+                    (qinf[1] & 0x800) >> 11,
+                    p,
+                )?;
+
+                let stored = coeffs[sp + stride];
+                let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1);
+                let v_n = v_n_full.saturating_sub(2);
+                let e_nw = 32 - v_n.leading_zeros();
+                line_state[lsp_idx] = 0x80 | e_nw as u8;
+            } else if locs & 0x80 != 0 {
+                coeffs[sp + stride] = 0;
+            }
+
+            sp += 1;
+        }
+
+        y += 2;
+    }
+
+    // --- Convert u32 coefficients to i32 (sign-magnitude to two's complement) ---
+    let result: Vec<i32> = coeffs
+        .iter()
+        .map(|&c| {
+            if c == 0 {
+                0i32
+            } else if c & 0x8000_0000 != 0 {
+                // Negative: sign bit is set
+                -((c & 0x7FFF_FFFF) as i32)
+            } else {
+                c as i32
+            }
+        })
+        .collect();
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +1456,147 @@ mod tests {
         let data = [0xFF, 0x7F, 0x00];
         let reader = FrwdReader::new(&data, 0xFF);
         let _ = reader.fetch();
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: UVLC decoders
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_init_uvlc_mode0() {
+        let (consumed, u) = decode_init_uvlc(0, 0);
+        assert_eq!(consumed, 0);
+        assert_eq!(u, [1, 1]);
+    }
+
+    #[test]
+    fn decode_init_uvlc_mode1() {
+        // VLC bits: 1 (prefix "1" -> u_pfx=1, suffix_len=0)
+        let (consumed, u) = decode_init_uvlc(0b1, 1);
+        assert_eq!(consumed, 1);
+        assert_eq!(u[0], 2); // d=1, u=1+1=2
+        assert_eq!(u[1], 1);
+    }
+
+    #[test]
+    fn decode_init_uvlc_mode2() {
+        let (consumed, u) = decode_init_uvlc(0b1, 2);
+        assert_eq!(consumed, 1);
+        assert_eq!(u[0], 1);
+        assert_eq!(u[1], 2);
+    }
+
+    #[test]
+    fn decode_init_uvlc_mode1_prefix01() {
+        // VLC bits: 10 (prefix "01" -> u_pfx=2, suffix_len=0)
+        let (consumed, u) = decode_init_uvlc(0b10, 1);
+        assert_eq!(consumed, 2);
+        assert_eq!(u[0], 3); // d=2, u=2+1=3
+        assert_eq!(u[1], 1);
+    }
+
+    #[test]
+    fn decode_init_uvlc_mode4() {
+        // Mode 4: both u_off=1, MEL event=1, each gets +2+kappa(=1)=+3
+        // Two prefix "1" codewords
+        let (consumed, u) = decode_init_uvlc(0b11, 4);
+        assert_eq!(consumed, 2);
+        assert_eq!(u[0], 4); // d=1, u=1+3=4
+        assert_eq!(u[1], 4);
+    }
+
+    #[test]
+    fn decode_noninit_uvlc_mode0() {
+        let (consumed, u) = decode_noninit_uvlc(0, 0);
+        assert_eq!(consumed, 0);
+        assert_eq!(u, [1, 1]);
+    }
+
+    #[test]
+    fn decode_noninit_uvlc_mode3() {
+        // Two symbols, each "1" prefix
+        let (consumed, u) = decode_noninit_uvlc(0b11, 3);
+        assert_eq!(consumed, 2);
+        assert_eq!(u[0], 2); // d=1, u=1+1
+        assert_eq!(u[1], 2);
+    }
+
+    #[test]
+    fn decode_noninit_uvlc_mode1() {
+        let (consumed, u) = decode_noninit_uvlc(0b1, 1);
+        assert_eq!(consumed, 1);
+        assert_eq!(u[0], 2);
+        assert_eq!(u[1], 1);
+    }
+
+    #[test]
+    fn decode_noninit_uvlc_mode2() {
+        let (consumed, u) = decode_noninit_uvlc(0b1, 2);
+        assert_eq!(consumed, 1);
+        assert_eq!(u[0], 1);
+        assert_eq!(u[1], 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: HT codeblock decode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ht_decode_cblk_rejects_invalid_inputs() {
+        // Zero passes
+        let result = ht_decode_cblk(&[0; 10], 4, 4, 0, &[10], 0, 8);
+        assert!(result.is_err());
+
+        // Too many passes
+        let result = ht_decode_cblk(&[0; 10], 4, 4, 4, &[10], 0, 8);
+        assert!(result.is_err());
+
+        // Zero width
+        let result = ht_decode_cblk(&[0; 10], 0, 4, 1, &[10], 0, 8);
+        assert!(result.is_err());
+
+        // Zero height
+        let result = ht_decode_cblk(&[0; 10], 4, 0, 1, &[10], 0, 8);
+        assert!(result.is_err());
+
+        // Bit depth > 31
+        let result = ht_decode_cblk(&[0; 10], 4, 4, 1, &[10], 0, 32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ht_decode_cblk_zero_bitdepth() {
+        // When p=0, all coefficients should be zero
+        let result = ht_decode_cblk(&[0; 10], 4, 2, 1, &[10], 0, 0).unwrap();
+        assert_eq!(result.len(), 8);
+        assert!(result.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn ht_decode_cblk_cleanup_pass_allzero_2x2() {
+        // Construct a minimal valid HT codeblock (2x2) where the cleanup pass
+        // produces all-zero coefficients.
+        //
+        // Layout (lcup=6, scup=2):
+        //   data[0..4] = MEL/MagSgn segment (0xFF + zero padding)
+        //   data[4..6] = VLC segment (last 2 bytes encode scup)
+        //
+        // MEL: 0xFF at k=0 produces run=0 events (MSB=1). With c_q=0 the
+        // cleanup loop executes run -= 2, yielding run=-2 (!= -1) so
+        // qinf[0]=0 (all samples non-significant). No MagSgn bits consumed.
+        //
+        // scup = (data[5] << 4) + (data[4] & 0xF) = (0 << 4) + 2 = 2.
+        let width = 2u32;
+        let height = 2u32;
+        let p = 8u32;
+        let zero_bplanes = 7u32;
+
+        let data: [u8; 6] = [
+            0xFF, 0x00, 0x00, 0x00, // MEL/MagSgn segment
+            0x02, 0x00, // VLC segment (encodes scup=2)
+        ];
+        let result = ht_decode_cblk(&data, width, height, 1, &[6], zero_bplanes, p).unwrap();
+        assert_eq!(result.len(), 4);
+        assert!(result.iter().all(|&v| v == 0));
     }
 }
