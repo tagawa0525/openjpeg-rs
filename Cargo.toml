@@ -3,5 +3,10 @@ name = "openjpeg-rs"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+parallel = ["dep:rayon"]
+
 [dependencies]
 thiserror = "2.0.18"
+rayon = { version = "1.11.0", optional = true }

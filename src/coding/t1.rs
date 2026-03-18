@@ -3,9 +3,14 @@
 // Encodes/decodes code-block coefficients using context-based MQ arithmetic coding.
 // Three coding passes per bitplane: Significance, Refinement, Clean-up.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::j2k::params::TileCodingParameters;
+use crate::tcd::{TcdCodeBlocks, TcdTile};
 use crate::transform::dwt::{dwt_getnorm, dwt_getnorm_real};
 use crate::types::*;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// Encoding pass information (C: opj_tcd_pass_t).
 #[derive(Debug, Default, Clone)]
@@ -1435,6 +1440,371 @@ impl T1 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Batch codeblock decode/encode (C: opj_t1_decode_cblks / opj_t1_encode_cblks)
+// ---------------------------------------------------------------------------
+
+/// Decode job for one codeblock.
+struct CblkDecodeJob {
+    /// Concatenated segment data.
+    data: Vec<u8>,
+    /// Per-segment: (offset, length, num_passes).
+    seg_info: Vec<(usize, usize, u32)>,
+    /// Codeblock dimensions.
+    w: u32,
+    h: u32,
+    /// Sub-band orientation.
+    orient: u32,
+    /// ROI shift.
+    roishift: u32,
+    /// Number of significant bit-planes.
+    numbps: u32,
+    /// Code-block coding style flags.
+    cblksty: u32,
+    /// Zero bit-planes (for HT: band.numbps - cblk.numbps).
+    zero_bplanes: u32,
+    /// Location in TCD hierarchy for write-back.
+    comp: usize,
+    res: usize,
+    band: usize,
+    prec: usize,
+    cblk: usize,
+}
+
+/// Process a single codeblock decode job.
+fn decode_one_cblk(job: &CblkDecodeJob) -> Result<Vec<i32>> {
+    let mut t1 = T1::new(false);
+    t1.allocate_buffers(job.w, job.h)?;
+
+    if job.seg_info.is_empty() {
+        return Ok(t1.data);
+    }
+
+    let segments: Vec<DecodeSegment> = job
+        .seg_info
+        .iter()
+        .map(|&(off, len, np)| DecodeSegment {
+            data: &job.data[off..off + len],
+            num_passes: np,
+        })
+        .collect();
+
+    let is_ht = (job.cblksty & J2K_CCP_CBLKSTY_HT) != 0;
+    if is_ht {
+        t1.decode_cblk_ht(&segments, job.numbps, job.roishift, job.zero_bplanes)?;
+    } else {
+        t1.decode_cblk(&segments, job.orient, job.roishift, job.numbps, job.cblksty)?;
+    }
+
+    Ok(t1.data)
+}
+
+/// Encode job for one codeblock.
+struct CblkEncodeJob {
+    /// Coefficient data in zigzag layout, shifted by T1_NMSEDEC_FRACBITS.
+    zigzag_data: Vec<i32>,
+    /// Codeblock dimensions.
+    w: u32,
+    h: u32,
+    /// Sub-band orientation.
+    orient: u32,
+    /// Component number.
+    compno: u32,
+    /// Resolution level.
+    level: u32,
+    /// Wavelet filter (0=9-7, 1=5-3).
+    qmfbid: u32,
+    /// Quantization step size.
+    stepsize: f64,
+    /// Code-block coding style flags.
+    cblksty: u32,
+    /// Total number of components.
+    numcomps: u32,
+    /// MCT normalization coefficients.
+    mct_norms: Option<Vec<f64>>,
+    /// Location in TCD hierarchy for write-back.
+    comp: usize,
+    res: usize,
+    band: usize,
+    prec: usize,
+    cblk: usize,
+}
+
+/// Result of encoding one codeblock.
+struct CblkEncodeResult {
+    data: Vec<u8>,
+    passes: Vec<TcdPass>,
+    numbps: u32,
+}
+
+/// Process a single codeblock encode job.
+fn encode_one_cblk(job: &CblkEncodeJob) -> CblkEncodeResult {
+    let mut t1 = T1::new(true);
+    t1.allocate_buffers(job.w, job.h).expect("allocate_buffers");
+    t1.data[..job.zigzag_data.len()].copy_from_slice(&job.zigzag_data);
+
+    let mut enc_buf = vec![0u8; (job.w * job.h * 4 + 1024) as usize];
+    let (passes, _cumwmsedec) = t1.encode_cblk(
+        &mut enc_buf,
+        job.orient,
+        job.compno,
+        job.level,
+        job.qmfbid,
+        job.stepsize,
+        job.cblksty,
+        job.numcomps,
+        job.mct_norms.as_deref(),
+    );
+
+    let total_rate = passes.last().map_or(0, |p| p.rate as usize);
+    let data = if total_rate > 0 {
+        enc_buf[1..1 + total_rate].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    // Compute numbps from data
+    let max_abs = t1.data.iter().map(|&v| v & 0x7FFFFFFF).max().unwrap_or(0);
+    let numbps = if max_abs != 0 {
+        (int_floorlog2(max_abs) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+    } else {
+        0
+    };
+
+    CblkEncodeResult {
+        data,
+        passes,
+        numbps,
+    }
+}
+
+/// Decode all codeblocks in a tile (C: opj_t1_decode_cblks).
+///
+/// Walks the TCD hierarchy and decodes each codeblock, writing results
+/// to `TcdCblkDec::decoded_data`. When the `parallel` feature is enabled,
+/// codeblocks are decoded in parallel using rayon.
+pub fn t1_decode_cblks(tile: &mut TcdTile, tcp: &TileCodingParameters) -> Result<()> {
+    // 1. Collect decode jobs
+    let mut jobs: Vec<CblkDecodeJob> = Vec::new();
+
+    for (compno, comp) in tile.comps.iter().enumerate() {
+        let tccp = tcp
+            .tccps
+            .get(compno)
+            .ok_or_else(|| Error::InvalidInput(format!("missing TCCP for component {compno}")))?;
+
+        for (resno, res) in comp.resolutions.iter().enumerate() {
+            for (bandno, band) in res.bands.iter().enumerate() {
+                if band.is_empty() {
+                    continue;
+                }
+                let orient = if resno == 0 { 0 } else { bandno as u32 + 1 };
+
+                for (precno, prec) in band.precincts.iter().enumerate() {
+                    if let TcdCodeBlocks::Dec(cblks) = &prec.cblks {
+                        for (cblkno, cblk) in cblks.iter().enumerate() {
+                            let w = (cblk.x1 - cblk.x0).max(0) as u32;
+                            let h = (cblk.y1 - cblk.y0).max(0) as u32;
+                            if w == 0 || h == 0 {
+                                continue;
+                            }
+
+                            // Concatenate chunks into contiguous buffer
+                            let total_len: usize = cblk.chunks.iter().map(|c| c.len as usize).sum();
+                            let mut data = vec![0u8; total_len + COMMON_CBLK_DATA_EXTRA];
+                            let mut off = 0;
+                            for chunk in &cblk.chunks {
+                                let clen = chunk.len as usize;
+                                data[off..off + clen].copy_from_slice(&chunk.data[..clen]);
+                                off += clen;
+                            }
+
+                            // Build segment info
+                            let mut seg_off = 0usize;
+                            let mut seg_info = Vec::new();
+                            for seg in &cblk.segs {
+                                let slen = seg.len as usize;
+                                if seg.real_num_passes > 0 {
+                                    seg_info.push((seg_off, slen, seg.real_num_passes));
+                                }
+                                seg_off += slen;
+                            }
+
+                            let zero_bplanes = (band.numbps - cblk.numbps as i32).max(0) as u32;
+
+                            jobs.push(CblkDecodeJob {
+                                data,
+                                seg_info,
+                                w,
+                                h,
+                                orient,
+                                roishift: tccp.roishift as u32,
+                                numbps: cblk.numbps,
+                                cblksty: tccp.cblksty,
+                                zero_bplanes,
+                                comp: compno,
+                                res: resno,
+                                band: bandno,
+                                prec: precno,
+                                cblk: cblkno,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Process jobs
+    // 2. Process jobs and write back results
+    let results: Vec<Result<Vec<i32>>>;
+
+    #[cfg(feature = "parallel")]
+    {
+        results = jobs.par_iter().map(decode_one_cblk).collect();
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        results = jobs.iter().map(decode_one_cblk).collect();
+    }
+
+    for (job, result) in jobs.iter().zip(results) {
+        let decoded_data = result?;
+        if let TcdCodeBlocks::Dec(cblks) =
+            &mut tile.comps[job.comp].resolutions[job.res].bands[job.band].precincts[job.prec].cblks
+        {
+            cblks[job.cblk].decoded_data = Some(decoded_data);
+        }
+    }
+
+    Ok(())
+}
+
+/// Encode all codeblocks in a tile (C: opj_t1_encode_cblks).
+///
+/// Walks the TCD hierarchy and encodes each codeblock. Coefficient data
+/// is read from `TcdTileComp::data` in row-major order and converted to
+/// the T1 zigzag layout. When the `parallel` feature is enabled,
+/// codeblocks are encoded in parallel using rayon.
+#[allow(clippy::too_many_arguments)]
+pub fn t1_encode_cblks(
+    tile: &mut TcdTile,
+    tcp: &TileCodingParameters,
+    mct_norms: Option<&[f64]>,
+    numcomps: u32,
+) -> Result<()> {
+    // 1. Collect encode jobs
+    let mut jobs: Vec<CblkEncodeJob> = Vec::new();
+
+    for (compno, comp) in tile.comps.iter().enumerate() {
+        let tccp = tcp
+            .tccps
+            .get(compno)
+            .ok_or_else(|| Error::InvalidInput(format!("missing TCCP for component {compno}")))?;
+
+        let comp_w = (comp.x1 - comp.x0).max(0) as usize;
+
+        for (resno, res) in comp.resolutions.iter().enumerate() {
+            let level = (comp.numresolutions as usize - 1 - resno) as u32;
+
+            for (bandno, band) in res.bands.iter().enumerate() {
+                if band.is_empty() {
+                    continue;
+                }
+                let orient = if resno == 0 { 0 } else { bandno as u32 + 1 };
+
+                for (precno, prec) in band.precincts.iter().enumerate() {
+                    if let TcdCodeBlocks::Enc(cblks) = &prec.cblks {
+                        for (cblkno, cblk) in cblks.iter().enumerate() {
+                            let cblk_w = (cblk.x1 - cblk.x0).max(0) as u32;
+                            let cblk_h = (cblk.y1 - cblk.y0).max(0) as u32;
+                            if cblk_w == 0 || cblk_h == 0 {
+                                continue;
+                            }
+
+                            // Copy from tile component (row-major) to zigzag layout
+                            let cblk_x0 = (cblk.x0 - comp.x0) as usize;
+                            let cblk_y0 = (cblk.y0 - comp.y0) as usize;
+                            let mut zigzag_data = vec![0i32; (cblk_w * cblk_h) as usize];
+                            for r in 0..cblk_h as usize {
+                                for c in 0..cblk_w as usize {
+                                    let src_idx = (cblk_y0 + r) * comp_w + (cblk_x0 + c);
+                                    let val = if src_idx < comp.data.len() {
+                                        comp.data[src_idx]
+                                    } else {
+                                        0
+                                    };
+                                    // Zigzag layout: col * h + row
+                                    let dst_idx = c * cblk_h as usize + r;
+                                    zigzag_data[dst_idx] = val << T1_NMSEDEC_FRACBITS;
+                                }
+                            }
+
+                            let stepsize_idx = if resno == 0 {
+                                0
+                            } else {
+                                3 * (resno - 1) + bandno + 1
+                            };
+                            let stepsize = if stepsize_idx < tccp.stepsizes.len() {
+                                let ss = &tccp.stepsizes[stepsize_idx];
+                                (1.0 + ss.mant as f64 / 2048.0)
+                                    * f64::powi(2.0, tccp.numgbits as i32 - ss.expn)
+                            } else {
+                                1.0
+                            };
+
+                            jobs.push(CblkEncodeJob {
+                                zigzag_data,
+                                w: cblk_w,
+                                h: cblk_h,
+                                orient,
+                                compno: compno as u32,
+                                level,
+                                qmfbid: tccp.qmfbid,
+                                stepsize,
+                                cblksty: tccp.cblksty,
+                                numcomps,
+                                mct_norms: mct_norms.map(|n| n.to_vec()),
+                                comp: compno,
+                                res: resno,
+                                band: bandno,
+                                prec: precno,
+                                cblk: cblkno,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Process jobs and write back results
+    let results: Vec<CblkEncodeResult>;
+
+    #[cfg(feature = "parallel")]
+    {
+        results = jobs.par_iter().map(encode_one_cblk).collect();
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        results = jobs.iter().map(encode_one_cblk).collect();
+    }
+    for (job, result) in jobs.iter().zip(results) {
+        if let TcdCodeBlocks::Enc(cblks) =
+            &mut tile.comps[job.comp].resolutions[job.res].bands[job.band].precincts[job.prec].cblks
+        {
+            cblks[job.cblk].data = result.data;
+            cblks[job.cblk].passes = result.passes;
+            cblks[job.cblk].numbps = result.numbps;
+            cblks[job.cblk].totalpasses = cblks[job.cblk].passes.len() as u32;
+        }
+    }
+
+    Ok(())
+}
+
 // --- Context helper functions ---
 
 use crate::coding::t1_luts::*;
@@ -2398,5 +2768,281 @@ mod tests {
         assert_eq!(t1.data.len(), 16); // 4x4
         // Sentinels should be overwritten
         assert!(t1.data.iter().all(|&v| v != 0xDEADBEEFu32 as i32));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Batch codeblock decode/encode (Phase 800a)
+    // -----------------------------------------------------------------------
+
+    use crate::j2k::params::TileCompCodingParameters;
+    use crate::tcd::{
+        TcdBand, TcdCblkDec, TcdCblkEnc, TcdCodeBlocks, TcdPrecinct, TcdResolution, TcdTile,
+        TcdTileComp,
+    };
+
+    /// Build a minimal tile with one decode codeblock (no segment data).
+    fn build_tile_one_dec_cblk(w: i32, h: i32) -> TcdTile {
+        TcdTile {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+            comps: vec![TcdTileComp {
+                x0: 0,
+                y0: 0,
+                x1: w,
+                y1: h,
+                compno: 0,
+                numresolutions: 1,
+                minimum_num_resolutions: 1,
+                resolutions: vec![TcdResolution {
+                    x0: 0,
+                    y0: 0,
+                    x1: w,
+                    y1: h,
+                    pw: 1,
+                    ph: 1,
+                    numbands: 1,
+                    bands: vec![TcdBand {
+                        x0: 0,
+                        y0: 0,
+                        x1: w,
+                        y1: h,
+                        bandno: 0,
+                        numbps: 8,
+                        stepsize: 1.0,
+                        precincts: vec![TcdPrecinct {
+                            x0: 0,
+                            y0: 0,
+                            x1: w,
+                            y1: h,
+                            cw: 1,
+                            ch: 1,
+                            cblks: TcdCodeBlocks::Dec(vec![TcdCblkDec {
+                                x0: 0,
+                                y0: 0,
+                                x1: w,
+                                y1: h,
+                                numbps: 8,
+                                ..Default::default()
+                            }]),
+                            ..Default::default()
+                        }],
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Build a minimal tile with one encode codeblock and test data.
+    fn build_tile_one_enc_cblk(w: i32, h: i32, fill: i32) -> TcdTile {
+        let n = (w * h) as usize;
+        TcdTile {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+            comps: vec![TcdTileComp {
+                x0: 0,
+                y0: 0,
+                x1: w,
+                y1: h,
+                compno: 0,
+                numresolutions: 1,
+                minimum_num_resolutions: 1,
+                resolutions: vec![TcdResolution {
+                    x0: 0,
+                    y0: 0,
+                    x1: w,
+                    y1: h,
+                    pw: 1,
+                    ph: 1,
+                    numbands: 1,
+                    bands: vec![TcdBand {
+                        x0: 0,
+                        y0: 0,
+                        x1: w,
+                        y1: h,
+                        bandno: 0,
+                        numbps: 8,
+                        stepsize: 1.0,
+                        precincts: vec![TcdPrecinct {
+                            x0: 0,
+                            y0: 0,
+                            x1: w,
+                            y1: h,
+                            cw: 1,
+                            ch: 1,
+                            cblks: TcdCodeBlocks::Enc(vec![TcdCblkEnc {
+                                x0: 0,
+                                y0: 0,
+                                x1: w,
+                                y1: h,
+                                ..Default::default()
+                            }]),
+                            ..Default::default()
+                        }],
+                    }],
+                    ..Default::default()
+                }],
+                data: vec![fill; n],
+                numpix: n,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn simple_tcp() -> TileCodingParameters {
+        TileCodingParameters {
+            tccps: vec![TileCompCodingParameters {
+                cblksty: 0,
+                roishift: 0,
+                qmfbid: 1,
+                numresolutions: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn t1_decode_cblks_empty_segments() {
+        // Codeblock with no segment data → decoded_data should be all zeros.
+        let mut tile = build_tile_one_dec_cblk(4, 4);
+        let tcp = simple_tcp();
+
+        t1_decode_cblks(&mut tile, &tcp).unwrap();
+
+        if let TcdCodeBlocks::Dec(cblks) = &tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            assert!(cblks[0].decoded_data.is_some());
+            let data = cblks[0].decoded_data.as_ref().unwrap();
+            assert_eq!(data.len(), 16); // 4x4
+            assert!(data.iter().all(|&v| v == 0));
+        } else {
+            panic!("expected Dec codeblocks");
+        }
+    }
+
+    #[test]
+    fn t1_decode_cblks_enc_blocks_skipped() {
+        // Enc codeblocks should be skipped (no crash).
+        let mut tile = build_tile_one_enc_cblk(4, 4, 100);
+        let tcp = simple_tcp();
+
+        t1_decode_cblks(&mut tile, &tcp).unwrap();
+
+        // Enc blocks should remain unchanged
+        if let TcdCodeBlocks::Enc(cblks) = &tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            assert!(cblks[0].data.is_empty());
+        } else {
+            panic!("expected Enc codeblocks");
+        }
+    }
+
+    #[test]
+    fn t1_encode_cblks_produces_data() {
+        // Encode with non-zero coefficient data → should produce passes + data.
+        let mut tile = build_tile_one_enc_cblk(4, 4, 100);
+        let tcp = simple_tcp();
+
+        t1_encode_cblks(&mut tile, &tcp, None, 1).unwrap();
+
+        if let TcdCodeBlocks::Enc(cblks) = &tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            assert!(
+                !cblks[0].data.is_empty(),
+                "encoded data should not be empty"
+            );
+            assert!(!cblks[0].passes.is_empty(), "passes should not be empty");
+            assert!(cblks[0].numbps > 0);
+            assert_eq!(cblks[0].totalpasses, cblks[0].passes.len() as u32);
+        } else {
+            panic!("expected Enc codeblocks");
+        }
+    }
+
+    #[test]
+    fn t1_encode_cblks_zero_data_no_passes() {
+        // All-zero data → no passes needed.
+        let mut tile = build_tile_one_enc_cblk(4, 4, 0);
+        let tcp = simple_tcp();
+
+        t1_encode_cblks(&mut tile, &tcp, None, 1).unwrap();
+
+        if let TcdCodeBlocks::Enc(cblks) = &tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            assert!(cblks[0].passes.is_empty());
+        } else {
+            panic!("expected Enc codeblocks");
+        }
+    }
+
+    #[test]
+    fn t1_batch_encode_decode_roundtrip() {
+        // Encode then decode via batch functions, verify roundtrip.
+        let original_data: Vec<i32> = (0..16).map(|i| (i * 10) - 70).collect();
+        let mut enc_tile = build_tile_one_enc_cblk(4, 4, 0);
+        enc_tile.comps[0].data = original_data.clone();
+        let tcp = simple_tcp();
+
+        // Encode
+        t1_encode_cblks(&mut enc_tile, &tcp, None, 1).unwrap();
+
+        let (enc_data, passes, numbps) = if let TcdCodeBlocks::Enc(cblks) =
+            &enc_tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            (
+                cblks[0].data.clone(),
+                cblks[0].passes.clone(),
+                cblks[0].numbps,
+            )
+        } else {
+            panic!("expected Enc codeblocks");
+        };
+
+        // Build a decode tile from the encoded data
+        let mut dec_tile = build_tile_one_dec_cblk(4, 4);
+        if let TcdCodeBlocks::Dec(cblks) =
+            &mut dec_tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            let total_passes = passes.len() as u32;
+            cblks[0].numbps = numbps;
+            cblks[0].segs.push(crate::tcd::TcdSeg {
+                len: enc_data.len() as u32,
+                numpasses: total_passes,
+                real_num_passes: total_passes,
+                maxpasses: total_passes,
+                ..Default::default()
+            });
+            cblks[0].chunks.push(crate::tcd::TcdSegDataChunk {
+                data: enc_data.clone(),
+                len: enc_data.len() as u32,
+            });
+        }
+
+        // Decode
+        t1_decode_cblks(&mut dec_tile, &tcp).unwrap();
+
+        if let TcdCodeBlocks::Dec(cblks) =
+            &dec_tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            let decoded = cblks[0].decoded_data.as_ref().unwrap();
+            assert_eq!(decoded.len(), 16);
+            // Verify roundtrip within tolerance (±2 for rounding)
+            for (i, (&dec, &orig)) in decoded.iter().zip(original_data.iter()).enumerate() {
+                assert!(
+                    (dec - orig).abs() <= 2,
+                    "sample {i}: decoded={dec}, original={orig}"
+                );
+            }
+        } else {
+            panic!("expected Dec codeblocks");
+        }
     }
 }
