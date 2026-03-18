@@ -518,7 +518,7 @@ static UVLC_DEC: [u32; 8] = [
 /// - 2: u_off = [0, 1] → decode one symbol for u[1]
 /// - 3: both u_off = 1, MEL event = 0 → decode two symbols (space-saving branch)
 /// - 4: both u_off = 1, MEL event = 1 → decode two symbols, add +2 each
-pub fn decode_init_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
+pub(crate) fn decode_init_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
     let mut consumed_bits = 0u32;
     let mut u = [1u32, 1u32];
 
@@ -607,7 +607,7 @@ pub fn decode_init_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
 ///
 /// Modes 0-3 only (no mode 4). Mode 3 always decodes two separate symbols
 /// (no space-saving branch).
-pub fn decode_noninit_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
+pub(crate) fn decode_noninit_uvlc(vlc: u32, mode: u32) -> (u32, [u32; 2]) {
     let mut consumed_bits = 0u32;
     let mut u = [1u32, 1u32];
 
@@ -662,8 +662,8 @@ use crate::coding::ht_luts::{VLC_TBL0, VLC_TBL1};
 
 /// Decode a single MagSgn sample and return the decoded coefficient value.
 ///
-/// Given significance bit `sigma`, EMB bit `emb_k`, EMB bit `emb_1`,
-/// the U_q value and bit-depth parameter p, this reads the MagSgn
+/// Given `u_q` value, EMB bit `emb_k_bit`, EMB bit `emb_1_bit`,
+/// and bit-depth parameter `p`, this reads the MagSgn
 /// bitstream and returns the coefficient.
 #[inline]
 fn decode_one_sample(
@@ -677,7 +677,11 @@ fn decode_one_sample(
     let m_n = u_q - emb_k_bit;
     magsgn.advance(m_n)?;
     let val = ms_val << 31; // sign bit
-    let mut v_n = ms_val & ((1u32 << m_n) - 1); // keep only m_n bits
+    let mut v_n = if m_n < 32 {
+        ms_val & ((1u32 << m_n) - 1)
+    } else {
+        ms_val
+    }; // keep only m_n bits
     v_n |= emb_1_bit << m_n; // add EMB e_1 as MSB
     v_n |= 1; // add center of bin
     // v_n = 2*(mu-1)+0.5, add 2 to get 2*mu+0.5, shift up by (p-1)
@@ -720,6 +724,11 @@ pub fn ht_decode_cblk(
             "ht_decode_cblk: width and height must be > 0".to_string(),
         ));
     }
+    if width > 1024 || height > 1024 {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: dimensions ({width}x{height}) exceed maximum 1024x1024"
+        )));
+    }
     if p > 31 {
         return Err(Error::InvalidInput(format!(
             "ht_decode_cblk: bit depth p ({p}) must be <= 31"
@@ -736,7 +745,14 @@ pub fn ht_decode_cblk(
     }
 
     let lcup = lengths[0] as usize; // cleanup pass length
-    let zero_bplanes_p1 = zero_bplanes + 1;
+    if zero_bplanes > p {
+        return Err(Error::InvalidInput(format!(
+            "ht_decode_cblk: zero_bplanes ({zero_bplanes}) must be <= p ({p})"
+        )));
+    }
+    let zero_bplanes_p1 = zero_bplanes.checked_add(1).ok_or_else(|| {
+        Error::InvalidInput("ht_decode_cblk: zero_bplanes + 1 overflows u32".to_string())
+    })?;
     let stride = width as usize;
 
     // --- Parse scup (last 2 bytes of cleanup segment) ---
@@ -771,8 +787,8 @@ pub fn ht_decode_cblk(
     let mut coeffs = vec![0u32; total_samples];
 
     // sigma buffers: each entry covers 8 columns x 4 rows packed into nibbles.
-    // We need ceil(width/8) + 1 entries per buffer. Use 132 (enough for 1024 cols).
-    let sigma_buf_len = 132usize;
+    // We need ceil(width/8) + 1 entries per buffer.
+    let sigma_buf_len = (width as usize / 8) + 2;
     let mut sigma1 = vec![0u32; sigma_buf_len];
     let mut sigma2 = vec![0u32; sigma_buf_len];
 
@@ -791,9 +807,6 @@ pub fn ht_decode_cblk(
     // sip = pointer into sigma1, sip_shift tracks nibble position
     let mut sip_idx: usize = 0;
     let mut sip_shift: u32 = 0;
-    let sip_is_sigma1 = true; // initial rows always use sigma1
-    let _ = sip_is_sigma1;
-
     let width_i = width as i32;
     let height_i = height as i32;
 
@@ -917,13 +930,11 @@ pub fn ht_decode_cblk(
 
             // Update line_state
             let t = line_state[lsp_idx] & 0x7F;
-            let ms_val_bits = magsgn.fetch();
             // Recompute v_n for line state (we need the v_n that was just decoded)
             // Use the coefficient we just stored to extract v_n
             let stored = coeffs[sp + stride];
             let v_n_full = (stored & 0x7FFF_FFFF) >> (p - 1); // extract (v_n + 2)
             let v_n = v_n_full.saturating_sub(2);
-            let _ = ms_val_bits;
             let e_n = 32 - v_n.leading_zeros();
             line_state[lsp_idx] = 0x80 | if t as u32 > e_n { t } else { e_n as u8 };
         }
@@ -1562,27 +1573,30 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
-    fn ht_decode_cblk_minimal_allzero() {
-        // Construct a minimal valid HT codeblock that decodes to all-zero
-        // coefficients. This requires a valid MEL/VLC/MagSgn bitstream where
-        // all quads are non-significant (all runs = 0).
+    fn ht_decode_cblk_cleanup_pass_allzero_2x2() {
+        // Construct a minimal valid HT codeblock (2x2) where the cleanup pass
+        // produces all-zero coefficients.
         //
-        // For an all-zero block:
-        // - MEL stream produces runs of all-zero events
-        // - VLC lookup with context 0 and MEL event 0 yields qinf=0
-        // - scup = 2 (minimal MEL+VLC segment)
+        // Layout (lcup=6, scup=2):
+        //   data[0..4] = MEL/MagSgn segment (0xFF + zero padding)
+        //   data[4..6] = VLC segment (last 2 bytes encode scup)
         //
-        // This test will be fully implemented when we have a reference
-        // bitstream generator or can validate against the C decoder.
-        let width = 4u32;
+        // MEL: 0xFF at k=0 produces run=0 events (MSB=1). With c_q=0 the
+        // cleanup loop executes run -= 2, yielding run=-2 (!= -1) so
+        // qinf[0]=0 (all samples non-significant). No MagSgn bits consumed.
+        //
+        // scup = (data[5] << 4) + (data[4] & 0xF) = (0 << 4) + 2 = 2.
+        let width = 2u32;
         let height = 2u32;
         let p = 8u32;
+        let zero_bplanes = 7u32;
 
-        // Placeholder: we need a properly constructed bitstream
-        let data = vec![0u8; 16];
-        let result = ht_decode_cblk(&data, width, height, 1, &[16], 0, p).unwrap();
-        assert_eq!(result.len(), (width * height) as usize);
+        let data: [u8; 6] = [
+            0xFF, 0x00, 0x00, 0x00, // MEL/MagSgn segment
+            0x02, 0x00, // VLC segment (encodes scup=2)
+        ];
+        let result = ht_decode_cblk(&data, width, height, 1, &[6], zero_bplanes, p).unwrap();
+        assert_eq!(result.len(), 4);
         assert!(result.iter().all(|&v| v == 0));
     }
 }
