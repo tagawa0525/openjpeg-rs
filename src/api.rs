@@ -3,21 +3,13 @@
 // High-level codec API for JPEG 2000 encoding and decoding.
 // Supports both J2K (raw codestream) and JP2 (file format) codecs.
 
-#[allow(unused_imports)]
 use crate::error::{Error, Result};
-#[allow(unused_imports)]
 use crate::image::Image;
-#[allow(unused_imports)]
 use crate::io::cio::MemoryStream;
-#[allow(unused_imports)]
 use crate::j2k::read::J2kDecoder;
-#[allow(unused_imports)]
 use crate::jp2::read::Jp2Decoder;
-#[allow(unused_imports)]
 use crate::jp2::write::Jp2Encoder;
-#[allow(unused_imports)]
-use crate::jp2::{ColourMethod, Jp2Colour};
-#[allow(unused_imports)]
+use crate::jp2::{ColourMethod, JP2_MAGIC, Jp2Colour};
 use crate::types::ColorSpace;
 
 /// Codec format.
@@ -32,23 +24,136 @@ pub enum CodecFormat {
 /// Decode a JPEG 2000 image from a byte buffer.
 ///
 /// Automatically selects J2K or JP2 codec based on `format`.
-pub fn decode(_data: &[u8], _format: CodecFormat) -> Result<Image> {
-    todo!("Phase 600d: decode")
+pub fn decode(data: &[u8], format: CodecFormat) -> Result<Image> {
+    if data.is_empty() {
+        return Err(Error::EndOfStream);
+    }
+    let mut stream = MemoryStream::new_input(data.to_vec());
+
+    match format {
+        CodecFormat::J2k => {
+            let mut dec = J2kDecoder::new();
+            dec.read_header(&mut stream)?;
+            dec.read_all_tiles(&mut stream)?;
+            Ok(dec.image)
+        }
+        CodecFormat::Jp2 => {
+            let mut dec = Jp2Decoder::new();
+            dec.read_header(&mut stream)?;
+            dec.read_codestream(&mut stream)?;
+            Ok(dec.j2k.image)
+        }
+    }
 }
 
 /// Encode an image to JPEG 2000 format.
 ///
 /// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
 /// For J2K, returns raw codestream.
-pub fn encode(_image: &Image, _format: CodecFormat) -> Result<Vec<u8>> {
-    todo!("Phase 600d: encode")
+///
+/// Currently produces a minimal J2K codestream (header + empty tiles).
+/// Full T1/T2 encoding is handled by J2kEncoder when available.
+pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
+    use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
+    use crate::j2k::write::J2kEncoder;
+
+    // Build minimal coding parameters from image
+    let w = image.x1.saturating_sub(image.x0);
+    let h = image.y1.saturating_sub(image.y0);
+    if w == 0 || h == 0 || image.comps.is_empty() {
+        return Err(Error::InvalidInput("Invalid image for encoding".into()));
+    }
+
+    let tccps: Vec<_> = image
+        .comps
+        .iter()
+        .map(|_| TileCompCodingParameters {
+            numresolutions: 1,
+            cblkw: 6,
+            cblkh: 6,
+            qmfbid: 1,
+            ..Default::default()
+        })
+        .collect();
+    let tcp = TileCodingParameters {
+        numlayers: 1,
+        tccps,
+        ..Default::default()
+    };
+    let cp = CodingParameters {
+        tdx: w,
+        tdy: h,
+        tw: 1,
+        th: 1,
+        ..CodingParameters::new_encoder()
+    };
+
+    let mut j2k_enc = J2kEncoder::new();
+    j2k_enc.write_header(image, &cp, &tcp)?;
+    j2k_enc.write_tile(0, &[0u8; 4], 0, 1)?;
+    let j2k_data = j2k_enc.finalize();
+
+    match format {
+        CodecFormat::J2k => Ok(j2k_data),
+        CodecFormat::Jp2 => {
+            let colour = colour_from_image(image);
+            let mut jp2_enc = Jp2Encoder::new();
+            jp2_enc.write_header(image, &colour, None)?;
+            jp2_enc.write_codestream(&j2k_data)?;
+            Ok(jp2_enc.finalize())
+        }
+    }
 }
 
 /// Detect codec format from the first bytes of data.
 ///
-/// Returns `Some(CodecFormat)` if the magic bytes match, `None` otherwise.
-pub fn detect_format(_data: &[u8]) -> Option<CodecFormat> {
-    todo!("Phase 600d: detect_format")
+/// J2K starts with SOC marker (0xFF4F).
+/// JP2 starts with a JP signature box (length=12, type=0x6A502020).
+pub fn detect_format(data: &[u8]) -> Option<CodecFormat> {
+    if data.len() < 4 {
+        return None;
+    }
+    // Check J2K: SOC marker
+    if data[0] == 0xFF && data[1] == 0x4F {
+        return Some(CodecFormat::J2k);
+    }
+    // Check JP2: signature box starts with length (any) + type 'jP  '
+    if data.len() >= 12 {
+        let box_type = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let magic = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+        if box_type == crate::jp2::JP2_JP && magic == JP2_MAGIC {
+            return Some(CodecFormat::Jp2);
+        }
+    }
+    None
+}
+
+/// Derive JP2 colour info from image color space.
+fn colour_from_image(image: &Image) -> Jp2Colour {
+    let enumcs = match image.color_space {
+        ColorSpace::Srgb => 16,
+        ColorSpace::Gray => 17,
+        ColorSpace::Sycc => 18,
+        ColorSpace::Eycc => 24,
+        _ => 0,
+    };
+    if !image.icc_profile.is_empty() {
+        Jp2Colour {
+            meth: ColourMethod::Icc,
+            precedence: 0,
+            approx: 0,
+            enumcs: 0,
+            icc_profile: image.icc_profile.clone(),
+        }
+    } else {
+        Jp2Colour {
+            meth: ColourMethod::Enumerated,
+            precedence: 0,
+            approx: 0,
+            enumcs,
+            icc_profile: Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -145,27 +250,27 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_format_j2k() {
         let j2k = build_minimal_j2k(8, 8, 1);
         assert_eq!(detect_format(&j2k), Some(CodecFormat::J2k));
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_format_jp2() {
         let jp2 = build_minimal_jp2();
         assert_eq!(detect_format(&jp2), Some(CodecFormat::Jp2));
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_format_unknown() {
         assert_eq!(detect_format(&[0x00, 0x01, 0x02, 0x03]), None);
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn detect_format_too_short() {
         assert_eq!(detect_format(&[0xFF]), None);
     }
@@ -175,7 +280,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn decode_j2k_basic() {
         let j2k = build_minimal_j2k(8, 8, 1);
         let image = decode(&j2k, CodecFormat::J2k).unwrap();
@@ -185,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn decode_jp2_basic() {
         let jp2 = build_minimal_jp2();
         let image = decode(&jp2, CodecFormat::Jp2).unwrap();
@@ -196,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn decode_empty_fails() {
         assert!(decode(&[], CodecFormat::J2k).is_err());
     }
@@ -206,7 +311,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
+
     fn encode_decode_roundtrip_jp2() {
         let params: Vec<_> = (0..3)
             .map(|_| ImageCompParam {
