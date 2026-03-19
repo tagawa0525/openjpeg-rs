@@ -579,6 +579,30 @@ impl Tcd {
         }
     }
 
+    /// Copy decoded codeblock coefficients into tile component data buffers.
+    ///
+    /// After T1 decode, each codeblock has decoded coefficients in `decoded_data`.
+    /// This function places them at the correct subband positions in the tile
+    /// component's data buffer, applying dequantization.
+    pub fn copy_decoded_cblks_to_data(
+        &mut self,
+        _tcp: &TileCodingParameters,
+    ) -> Result<()> {
+        todo!("Phase 1100b: copy_decoded_cblks_to_data")
+    }
+
+    /// Decode a tile: T2 → T1 → copy cblks → DWT → MCT → DC shift.
+    /// (C: opj_tcd_decode_tile)
+    pub fn decode_tile(
+        &mut self,
+        _tile_data: &mut [u8],
+        _image: &Image,
+        _cp: &CodingParameters,
+        _tcp: &TileCodingParameters,
+    ) -> Result<()> {
+        todo!("Phase 1100b: decode_tile")
+    }
+
     /// Apply DC level shift for decoding (C: opj_tcd_dc_level_shift_decode).
     ///
     /// Adds the DC level shift back to each sample after decoding.
@@ -1021,6 +1045,187 @@ mod tests {
         tcd.tile.comps[0].data = data.clone();
         tcd.dc_level_shift_encode(&tcp_no_shift);
         assert_eq!(tcd.tile.comps[0].data, data);
+    }
+
+    // --- Band coordinates at levelno=0 ---
+
+    #[test]
+    fn init_tile_band_coords_at_finest_resolution() {
+        // Verify band coordinates at levelno=0 (finest resolution) are correct.
+        // For a 64×64 component with 2 resolutions:
+        // - Res 1 (levelno=0) bands should be 32×32, not 64×64.
+        let (image, cp, tcp) = create_test_setup(false);
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
+
+        let comp = &tcd.tile.comps[0];
+        let res0 = &comp.resolutions[0];
+        let res1 = &comp.resolutions[1];
+
+        // Res 0 (LL): 32×32
+        let ll = &res0.bands[0];
+        assert_eq!(ll.x1 - ll.x0, 32);
+        assert_eq!(ll.y1 - ll.y0, 32);
+
+        // Res 1 bands at levelno=0 should have subband dimensions, not resolution dimensions.
+        // HL (bandno=1): should be ceil((64-1)/2) - ceil((0-1)/2) = 32 - 0 = 32 wide
+        // But the subband height: ceil(64/2) - ceil(0/2) = 32 high
+        let hl = &res1.bands[0]; // bandno=1 (HL)
+        assert_eq!(hl.bandno, 1);
+        assert_eq!(hl.x1 - hl.x0, 32, "HL width should be 32, not {}", hl.x1 - hl.x0);
+        assert_eq!(hl.y1 - hl.y0, 32, "HL height should be 32, not {}", hl.y1 - hl.y0);
+
+        // LH (bandno=2): width=32, height=32
+        let lh = &res1.bands[1]; // bandno=2 (LH)
+        assert_eq!(lh.bandno, 2);
+        assert_eq!(lh.x1 - lh.x0, 32);
+        assert_eq!(lh.y1 - lh.y0, 32);
+
+        // HH (bandno=3): width=32, height=32
+        let hh = &res1.bands[2]; // bandno=3 (HH)
+        assert_eq!(hh.bandno, 3);
+        assert_eq!(hh.x1 - hh.x0, 32);
+        assert_eq!(hh.y1 - hh.y0, 32);
+    }
+
+    // --- copy_decoded_cblks_to_data ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn copy_decoded_cblks_single_res() {
+        // 1 component, 1 resolution (LL only), 4×4 tile, 1 codeblock
+        // Set decoded_data with known coefficients and verify buffer placement.
+        let (image, cp, tcp) = create_test_setup(false);
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
+
+        // Use only res 0 (LL): 32×32
+        let comp = &mut tcd.tile.comps[0];
+        // Allocate data buffer for the component
+        let comp_w = (comp.x1 - comp.x0) as usize;
+        let comp_h = (comp.y1 - comp.y0) as usize;
+        comp.data.resize(comp_w * comp_h, 0);
+
+        // Set decoded_data on the LL codeblock
+        let res0 = &tcd.tile.comps[0].resolutions[0];
+        let cblk_w = if let TcdCodeBlocks::Dec(cblks) = &res0.bands[0].precincts[0].cblks {
+            (cblks[0].x1 - cblks[0].x0) as usize
+        } else {
+            panic!("expected Dec");
+        };
+        let cblk_h = if let TcdCodeBlocks::Dec(cblks) = &res0.bands[0].precincts[0].cblks {
+            (cblks[0].y1 - cblks[0].y0) as usize
+        } else {
+            panic!("expected Dec");
+        };
+
+        // Fill decoded_data with a known pattern
+        let mut test_data = vec![0i32; cblk_w * cblk_h];
+        for (i, val) in test_data.iter_mut().enumerate() {
+            *val = (i as i32 + 1) * 2; // Pre-multiply by 2 since copy divides by 2 for qmfbid=1
+        }
+        if let TcdCodeBlocks::Dec(cblks) =
+            &mut tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            cblks[0].decoded_data = Some(test_data.clone());
+        }
+
+        tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
+
+        // Verify: LL coefficients should be at top-left of comp.data
+        let comp = &tcd.tile.comps[0];
+        for j in 0..cblk_h {
+            for i in 0..cblk_w {
+                let expected = (j * cblk_w + i) as i32 + 1; // divided by 2
+                let actual = comp.data[j * comp_w + i];
+                assert_eq!(actual, expected, "mismatch at ({i},{j})");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn copy_decoded_cblks_two_res_subband_offsets() {
+        // 1 component, 2 resolutions, verify HL/LH/HH are at correct buffer offsets.
+        let (image, cp, tcp) = create_test_setup(false);
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
+
+        let comp = &mut tcd.tile.comps[0];
+        let comp_w = (comp.x1 - comp.x0) as usize;
+        let comp_h = (comp.y1 - comp.y0) as usize;
+        comp.data.resize(comp_w * comp_h, 0);
+
+        // Get previous resolution dimensions for offset calculation
+        let res0_w = (tcd.tile.comps[0].resolutions[0].x1
+            - tcd.tile.comps[0].resolutions[0].x0) as usize;
+        let res0_h = (tcd.tile.comps[0].resolutions[0].y1
+            - tcd.tile.comps[0].resolutions[0].y0) as usize;
+
+        // Set decoded_data on HL codeblock (bandno & 1 = 1 → x offset)
+        for bandno in 0..3 {
+            let band = &tcd.tile.comps[0].resolutions[1].bands[bandno];
+            let band_bandno = band.bandno;
+            if let TcdCodeBlocks::Dec(cblks) =
+                &tcd.tile.comps[0].resolutions[1].bands[bandno].precincts[0].cblks
+            {
+                let cw = (cblks[0].x1 - cblks[0].x0) as usize;
+                let ch = (cblks[0].y1 - cblks[0].y0) as usize;
+                let mut data = vec![0i32; cw * ch];
+                for val in data.iter_mut() {
+                    *val = (band_bandno as i32 + 1) * 200; // Distinct value per band × 2
+                }
+                // Apply through mutable ref
+                if let TcdCodeBlocks::Dec(cblks_mut) =
+                    &mut tcd.tile.comps[0].resolutions[1].bands[bandno].precincts[0].cblks
+                {
+                    cblks_mut[0].decoded_data = Some(data);
+                }
+            }
+        }
+
+        tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
+
+        // HL (bandno=1): x offset = res0_w, y offset = 0
+        let hl_val = tcd.tile.comps[0].data[0 * comp_w + res0_w];
+        assert_eq!(hl_val, 100, "HL should be at x=res0_w");
+
+        // LH (bandno=2): x offset = 0, y offset = res0_h
+        let lh_val = tcd.tile.comps[0].data[res0_h * comp_w + 0];
+        assert_eq!(lh_val, 150, "LH should be at y=res0_h");
+
+        // HH (bandno=3): x offset = res0_w, y offset = res0_h
+        let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
+        assert_eq!(hh_val, 200, "HH should be at (res0_w, res0_h)");
+    }
+
+    // --- decode_tile pipeline ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn decode_tile_single_res_dc_shift() {
+        // Minimal pipeline: 1 component, 1 resolution, no DWT, no MCT.
+        // Codeblock has all-zero decoded data.
+        // After pipeline: values should be DC shift (128 for 8-bit unsigned).
+        let (image, cp, tcp) = create_test_setup(false);
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
+
+        // Create minimal tile data: single empty packet (present bit = 0)
+        let mut tile_data = vec![0x00u8; 1];
+
+        tcd.decode_tile(&mut tile_data, &image, &cp, &tcp).unwrap();
+
+        // After DC level shift (128), all pixels should be 128
+        let comp = &tcd.tile.comps[0];
+        assert!(!comp.data.is_empty());
+        // With empty codeblock data, T1 produces zeros.
+        // copy_cblks places zeros in buffer.
+        // No DWT (1 resolution).
+        // DC shift adds 128.
+        for &val in &comp.data {
+            assert_eq!(val, 128);
+        }
     }
 
     #[test]

@@ -427,6 +427,19 @@ pub fn t2_read_packet_data(
 /// Decode a single packet (header + data).
 /// Returns total bytes consumed.
 /// (C: opj_t2_decode_packet)
+/// Decode all packets for a tile (C: opj_t2_decode_packets).
+///
+/// Iterates through packets using PacketIterators and decodes each one.
+pub fn t2_decode_packets(
+    _tile: &mut TcdTile,
+    _tcp: &crate::j2k::params::TileCodingParameters,
+    _pis: &mut crate::tier2::pi::PacketIterators,
+    _data: &mut [u8],
+    _max_layers: u32,
+) -> Result<usize> {
+    todo!("Phase 1100b: t2_decode_packets")
+}
+
 pub fn t2_decode_packet(
     tile: &mut TcdTile,
     compno: u32,
@@ -635,6 +648,88 @@ mod tests {
         let total_bytes = t2_decode_packet(&mut tile, 0, 0, 0, 0, 0, &mut packet).unwrap();
         assert!(total_bytes > 0);
         assert!(total_bytes <= packet.len());
+    }
+
+    // --- t2_decode_packets ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_decode_packets_single_layer() {
+        use crate::tier2::pi::{PacketIterators, PiComp, PiIterator, PiResolution};
+        use crate::j2k::params::Poc;
+        use crate::types::ProgressionOrder;
+
+        let band_numbps = 8;
+        let numpasses = 1u32;
+        let data_len = 5u32;
+        let mut packet = encode_test_packet(0, band_numbps, 0, numpasses, data_len, 0);
+        let mut tile = make_tile_1cblk(band_numbps);
+
+        // Create a simple PacketIterators: 1 component, 1 res, 1 layer, 1 precinct
+        let pi_res = PiResolution {
+            pdx: 15,
+            pdy: 15,
+            pw: 1,
+            ph: 1,
+        };
+        let pi_comp = PiComp {
+            dx: 1,
+            dy: 1,
+            numresolutions: 1,
+            resolutions: vec![pi_res],
+        };
+        let poc = Poc {
+            layno1: 1,
+            resno1: 1,
+            compno1: 1,
+            precno1: 1,
+            prg: ProgressionOrder::Lrcp,
+            tx1: 64,
+            ty1: 64,
+            ..Default::default()
+        };
+        let pi = PiIterator {
+            tp_on: false,
+            step_l: 1,
+            step_r: 1,
+            step_c: 1,
+            step_p: 1,
+            compno: 0,
+            resno: 0,
+            precno: 0,
+            layno: 0,
+            first: true,
+            poc,
+            numcomps: 1,
+            comps: vec![pi_comp],
+            tx0: 0,
+            ty0: 0,
+            tx1: 64,
+            ty1: 64,
+            x: 0,
+            y: 0,
+            dx: 0,
+            dy: 0,
+        };
+        let mut pis = PacketIterators {
+            iterators: vec![pi],
+            include: vec![0i16; 1],
+        };
+
+        let tcp = crate::j2k::params::TileCodingParameters {
+            numlayers: 1,
+            ..Default::default()
+        };
+
+        let bytes_read = t2_decode_packets(&mut tile, &tcp, &mut pis, &mut packet, 1).unwrap();
+        assert_eq!(bytes_read, packet.len());
+
+        // Verify codeblock has segment data
+        let cblk = match &tile.comps[0].resolutions[0].bands[0].precincts[0].cblks {
+            TcdCodeBlocks::Dec(cblks) => &cblks[0],
+            _ => panic!("expected Dec cblks"),
+        };
+        assert!(!cblk.chunks.is_empty());
     }
 
     // --- Comma code ---

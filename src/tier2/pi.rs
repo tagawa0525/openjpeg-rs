@@ -667,6 +667,21 @@ fn pi_next_cprl(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Packet iterator creation
+// ---------------------------------------------------------------------------
+
+/// Create packet iterators for decoding (C: opj_pi_create_decode).
+///
+/// Builds PacketIterators from image and coding parameters for a given tile.
+pub fn pi_create_decode(
+    _image: &crate::image::Image,
+    _cp: &crate::j2k::params::CodingParameters,
+    _tileno: u32,
+) -> crate::error::Result<PacketIterators> {
+    todo!("Phase 1100b: pi_create_decode")
+}
+
+// ---------------------------------------------------------------------------
 // Public helper functions
 // ---------------------------------------------------------------------------
 
@@ -1017,6 +1032,71 @@ mod tests {
     }
 
     // --- Empty tile ---
+
+    // --- pi_create_decode ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn pi_create_decode_basic() {
+        use crate::image::{Image, ImageCompParam};
+        use crate::j2k::params::{
+            CodingParamMode, CodingParameters, DecodingParam, TileCodingParameters,
+            TileCompCodingParameters,
+        };
+        use crate::types::ColorSpace;
+
+        // 1 component, 64x64, 2 resolutions, 1 layer, LRCP
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 64,
+            h: 64,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 64;
+        image.y1 = 64;
+
+        let tccp = TileCompCodingParameters {
+            numresolutions: 2,
+            cblkw: 6,
+            cblkh: 6,
+            qmfbid: 1,
+            ..Default::default()
+        };
+        let tcp = TileCodingParameters {
+            numlayers: 1,
+            prg: ProgressionOrder::Lrcp,
+            tccps: vec![tccp],
+            ..Default::default()
+        };
+        let cp = CodingParameters {
+            tx0: 0,
+            ty0: 0,
+            tdx: 64,
+            tdy: 64,
+            tw: 1,
+            th: 1,
+            tcps: vec![tcp],
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..CodingParameters::new_encoder()
+        };
+
+        let pis = pi_create_decode(&image, &cp, 0).unwrap();
+        assert!(!pis.is_empty());
+        // Should have at least 1 iterator (for the default POC)
+        assert_eq!(pis.len(), 1);
+        // The iterator should produce packets (1 layer * (precincts@res0 + precincts@res1))
+        let mut pis = pis;
+        let mut count = 0;
+        while pis.next(0) {
+            count += 1;
+        }
+        assert!(count > 0);
+    }
 
     #[test]
     fn empty_tile_returns_false() {
