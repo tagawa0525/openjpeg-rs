@@ -173,8 +173,14 @@ pub fn t2_read_packet_header(
         return Err(Error::EndOfStream);
     }
 
-    let comp = &mut tile.comps[compno as usize];
-    let res = &mut comp.resolutions[resno as usize];
+    let comp = tile
+        .comps
+        .get_mut(compno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("compno {compno} out of range")))?;
+    let res = comp
+        .resolutions
+        .get_mut(resno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("resno {resno} out of range")))?;
 
     // On first layer, reset tag trees and code block state
     if layno == 0 {
@@ -182,7 +188,10 @@ pub fn t2_read_packet_header(
             if band.is_empty() {
                 continue;
             }
-            let prec = &mut band.precincts[precno as usize];
+            let prec = match band.precincts.get_mut(precno as usize) {
+                Some(p) => p,
+                None => continue,
+            };
             if let Some(ref mut incl) = prec.incltree {
                 incl.reset();
             }
@@ -215,7 +224,10 @@ pub fn t2_read_packet_header(
             continue;
         }
         let band_numbps = band.numbps;
-        let prec = &mut band.precincts[precno as usize];
+        let prec = band
+            .precincts
+            .get_mut(precno as usize)
+            .ok_or_else(|| Error::InvalidInput(format!("precno {precno} out of range")))?;
         let num_cblks = (prec.cw * prec.ch) as usize;
 
         for cblkno in 0..num_cblks {
