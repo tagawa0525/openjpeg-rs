@@ -1482,7 +1482,7 @@ fn decode_one_cblk(job: &CblkDecodeJob) -> Result<Vec<i32>> {
 
     let mut segments: Vec<DecodeSegment> = Vec::with_capacity(job.seg_info.len());
     for &(off, len, np) in &job.seg_info {
-        if off + len > job.data.len() {
+        if off.checked_add(len).is_none_or(|end| end > job.data.len()) {
             return Err(Error::InvalidInput(format!(
                 "segment offset {off}+{len} exceeds data length {}",
                 job.data.len()
@@ -1785,7 +1785,7 @@ pub fn t1_encode_cblks(
     }
 
     // 2. Process jobs and write back results
-    let results: Vec<Result<CblkEncodeResult>>;
+    let results: Result<Vec<CblkEncodeResult>>;
 
     #[cfg(feature = "parallel")]
     {
@@ -1796,8 +1796,7 @@ pub fn t1_encode_cblks(
     {
         results = jobs.iter().map(encode_one_cblk).collect();
     }
-    for (job, result) in jobs.iter().zip(results) {
-        let result = result?;
+    for (job, result) in jobs.iter().zip(results?) {
         if let TcdCodeBlocks::Enc(cblks) =
             &mut tile.comps[job.comp].resolutions[job.res].bands[job.band].precincts[job.prec].cblks
         {
