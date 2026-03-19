@@ -7,6 +7,23 @@ use crate::error::Result;
 #[cfg(feature = "parallel")]
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
+/// Per-thread scratch buffers for parallel DWT horizontal passes.
+#[cfg(feature = "parallel")]
+struct DwtScratch<T> {
+    t: Vec<T>,
+    s: Vec<T>,
+}
+
+#[cfg(feature = "parallel")]
+impl<T: Default + Clone> DwtScratch<T> {
+    fn ensure(&mut self, len: usize) {
+        if self.t.len() < len {
+            self.t.resize(len, T::default());
+            self.s.resize(len, T::default());
+        }
+    }
+}
+
 /// 5-3 normalization table (C: opj_dwt_norms). Indexed by [orient][level].
 #[rustfmt::skip]
 pub static DWT_NORMS: [[f64; 10]; 4] = [
@@ -390,17 +407,19 @@ pub fn dwt_encode_2d_53(
         // Horizontal pass
         #[cfg(feature = "parallel")]
         {
-            data.chunks_mut(stride)
-                .take(rh)
-                .par_bridge()
-                .for_each(|row| {
-                    let mut t = vec![0i32; rw];
-                    let mut s = vec![0i32; rw];
-                    t[..rw].copy_from_slice(&row[..rw]);
-                    dwt_encode_1_53(&mut t, sn_h, dn_h, false);
-                    deinterleave_h(&t, &mut s, sn_h, dn_h, false);
-                    row[..rw].copy_from_slice(&s[..rw]);
-                });
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<i32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    scratch.t[..rw].copy_from_slice(&row[..rw]);
+                    dwt_encode_1_53(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    deinterleave_h(&scratch.t[..rw], &mut scratch.s[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.s[..rw]);
+                },
+            );
         }
         #[cfg(not(feature = "parallel"))]
         {
@@ -442,15 +461,18 @@ pub fn dwt_decode_2d_53(
         // Horizontal pass
         #[cfg(feature = "parallel")]
         {
-            data.chunks_mut(stride)
-                .take(rh)
-                .par_bridge()
-                .for_each(|row| {
-                    let mut t = vec![0i32; rw];
-                    interleave_h(&row[..rw], &mut t, sn_h, dn_h, false);
-                    dwt_decode_1_53(&mut t, sn_h, dn_h, false);
-                    row[..rw].copy_from_slice(&t[..rw]);
-                });
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<i32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    interleave_h(&row[..rw], &mut scratch.t[..rw], sn_h, dn_h, false);
+                    dwt_decode_1_53(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.t[..rw]);
+                },
+            );
         }
         #[cfg(not(feature = "parallel"))]
         {
@@ -526,17 +548,19 @@ pub fn dwt_encode_2d_97(
         // Horizontal pass
         #[cfg(feature = "parallel")]
         {
-            data.chunks_mut(stride)
-                .take(rh)
-                .par_bridge()
-                .for_each(|row| {
-                    let mut t = vec![0.0f32; rw];
-                    let mut s = vec![0.0f32; rw];
-                    t[..rw].copy_from_slice(&row[..rw]);
-                    dwt_encode_1_97(&mut t, sn_h, dn_h, false);
-                    deinterleave_h(&t, &mut s, sn_h, dn_h, false);
-                    row[..rw].copy_from_slice(&s[..rw]);
-                });
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<f32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    scratch.t[..rw].copy_from_slice(&row[..rw]);
+                    dwt_encode_1_97(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    deinterleave_h(&scratch.t[..rw], &mut scratch.s[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.s[..rw]);
+                },
+            );
         }
         #[cfg(not(feature = "parallel"))]
         {
@@ -578,15 +602,18 @@ pub fn dwt_decode_2d_97(
         // Horizontal pass
         #[cfg(feature = "parallel")]
         {
-            data.chunks_mut(stride)
-                .take(rh)
-                .par_bridge()
-                .for_each(|row| {
-                    let mut t = vec![0.0f32; rw];
-                    interleave_h(&row[..rw], &mut t, sn_h, dn_h, false);
-                    dwt_decode_1_97(&mut t, sn_h, dn_h, false);
-                    row[..rw].copy_from_slice(&t[..rw]);
-                });
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<f32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    interleave_h(&row[..rw], &mut scratch.t[..rw], sn_h, dn_h, false);
+                    dwt_decode_1_97(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.t[..rw]);
+                },
+            );
         }
         #[cfg(not(feature = "parallel"))]
         {
