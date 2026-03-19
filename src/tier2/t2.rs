@@ -288,7 +288,15 @@ pub fn t2_read_packet_header(
             if let TcdCodeBlocks::Dec(ref mut cblks) = prec.cblks {
                 let cblk = &mut cblks[cblkno];
                 cblk.numnewpasses = numnewpasses;
-                cblk.numlenbits += increment;
+                cblk.numlenbits = cblk.numlenbits.checked_add(increment).ok_or_else(|| {
+                    Error::InvalidInput("numlenbits overflow from corrupted input".into())
+                })?;
+                if cblk.numlenbits > 32 {
+                    return Err(Error::InvalidInput(format!(
+                        "numlenbits {} exceeds 32",
+                        cblk.numlenbits
+                    )));
+                }
 
                 // Initialize first segment if needed
                 if cblk.numsegs == 0 {
