@@ -1,6 +1,6 @@
 # openjpeg-rs 移植マスタープラン
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## Context
 
