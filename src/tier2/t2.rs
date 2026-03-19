@@ -452,15 +452,15 @@ pub fn t2_decode_packets(
                 continue;
             }
 
-            // Get cblksty from TCCP
+            // Get cblksty from TCCP — error if missing (inconsistent setup)
             let cblksty = tcp
                 .tccps
                 .get(compno as usize)
-                .map(|tccp| tccp.cblksty)
-                .unwrap_or(0);
+                .ok_or_else(|| Error::InvalidInput(format!("missing TCCP for component {compno}")))?
+                .cblksty;
 
             if total_read >= data.len() {
-                break;
+                return Err(Error::EndOfStream);
             }
 
             let bytes = t2_decode_packet(
@@ -756,6 +756,7 @@ mod tests {
 
         let tcp = crate::j2k::params::TileCodingParameters {
             numlayers: 1,
+            tccps: vec![crate::j2k::params::TileCompCodingParameters::default()],
             ..Default::default()
         };
 

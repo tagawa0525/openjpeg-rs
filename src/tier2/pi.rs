@@ -749,7 +749,7 @@ pub fn pi_create_decode(
             } else {
                 0
             };
-            max_prec = max_prec.max(pw * ph);
+            max_prec = max_prec.max(pw.saturating_mul(ph));
 
             pi_resolutions.push(PiResolution { pdx, pdy, pw, ph });
         }
@@ -770,6 +770,12 @@ pub fn pi_create_decode(
 
     let numlayers = tcp.numlayers.max(1);
     let include_size = (numlayers as u64).saturating_mul(step_l as u64);
+    const MAX_INCLUDE_SIZE: u64 = 64 * 1024 * 1024; // 64M entries
+    if include_size > MAX_INCLUDE_SIZE {
+        return Err(crate::error::Error::InvalidInput(format!(
+            "include array size {include_size} exceeds limit {MAX_INCLUDE_SIZE}"
+        )));
+    }
     let include = vec![0i16; include_size as usize];
 
     // Build POC: single progression order covering the full tile

@@ -1488,16 +1488,59 @@ mod tests {
 
     // --- decode_tile pipeline ---
 
+    /// Create a 1-resolution test setup (no DWT needed).
+    fn create_single_res_test_setup() -> (Image, CodingParameters, TileCodingParameters) {
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 64,
+            h: 64,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 64;
+        image.y1 = 64;
+
+        let tccp = TileCompCodingParameters {
+            numresolutions: 1,
+            cblkw: 6,
+            cblkh: 6,
+            qmfbid: 1,
+            m_dc_level_shift: 128,
+            ..Default::default()
+        };
+        let tcp = TileCodingParameters {
+            numlayers: 1,
+            tccps: vec![tccp],
+            ..Default::default()
+        };
+        let cp = CodingParameters {
+            tx0: 0,
+            ty0: 0,
+            tdx: 64,
+            tdy: 64,
+            tw: 1,
+            th: 1,
+            tcps: vec![tcp.clone()],
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..CodingParameters::new_encoder()
+        };
+        (image, cp, tcp)
+    }
+
     #[test]
     fn decode_tile_single_res_dc_shift() {
         // Minimal pipeline: 1 component, 1 resolution, no DWT, no MCT.
         // Codeblock has all-zero decoded data.
         // After pipeline: values should be DC shift (128 for 8-bit unsigned).
-        let (image, cp, tcp) = create_test_setup(false);
+        let (image, cp, tcp) = create_single_res_test_setup();
         let mut tcd = Tcd::new(true);
         tcd.init_tile(0, &image, &cp, &tcp, false).unwrap();
 
-        // Create minimal tile data: single empty packet (present bit = 0)
+        // 1 resolution, 1 band (LL), 1 precinct → 1 packet. Empty packet = 1 byte.
         let mut tile_data = vec![0x00u8; 1];
 
         tcd.decode_tile(&mut tile_data, &image, &cp, &tcp).unwrap();
