@@ -120,6 +120,33 @@ pub enum TcdCodeBlocks {
     Empty,
 }
 
+impl TcdCodeBlocks {
+    /// Returns a reference to the Dec variant, or None.
+    pub fn as_dec(&self) -> Option<&Vec<TcdCblkDec>> {
+        match self {
+            TcdCodeBlocks::Dec(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Takes decoded_data from a Dec codeblock, leaving None in its place.
+    pub fn take_dec_decoded(&mut self, index: usize) -> Option<Vec<i32>> {
+        match self {
+            TcdCodeBlocks::Dec(v) => v.get_mut(index)?.decoded_data.take(),
+            _ => None,
+        }
+    }
+
+    /// Restores decoded_data into a Dec codeblock.
+    pub fn restore_dec_decoded(&mut self, index: usize, data: Vec<i32>) {
+        if let TcdCodeBlocks::Dec(v) = self
+            && let Some(cblk) = v.get_mut(index)
+        {
+            cblk.decoded_data = Some(data);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hierarchy: Precinct → Band → Resolution → TileComp → Tile
 // ---------------------------------------------------------------------------
@@ -588,21 +615,26 @@ impl Tcd {
     /// This function places them at the correct subband positions in the tile
     /// component's data buffer, applying dequantization.
     pub fn copy_decoded_cblks_to_data(&mut self, tcp: &TileCodingParameters) -> Result<()> {
-        // Collect copy operations to avoid borrow conflicts.
-        struct CopyOp {
+        // Collect lightweight descriptors (no data clone) to avoid borrow conflicts.
+        struct CopyDesc {
             compno: usize,
+            resno: usize,
+            bandno: usize,
+            precno: usize,
+            cblkno: usize,
             buf_x: usize,
             buf_y: usize,
             cblk_w: usize,
             cblk_h: usize,
-            data: Vec<i32>,
             qmfbid: u32,
             stepsize: f32,
         }
 
-        let mut ops = Vec::new();
+        let mut descs = Vec::new();
         for compno in 0..self.tile.comps.len() {
             let comp = &self.tile.comps[compno];
+            let comp_w = (comp.x1 - comp.x0) as usize;
+            let comp_h = (comp.y1 - comp.y0) as usize;
             let qmfbid = tcp.tccps.get(compno).map(|t| t.qmfbid).unwrap_or(1);
 
             for resno in 0..comp.numresolutions as usize {
@@ -632,16 +664,15 @@ impl Tcd {
                         (0, 0)
                     };
 
-                    for prec in &band.precincts {
+                    for (precno, prec) in band.precincts.iter().enumerate() {
                         let cblks = match &prec.cblks {
                             TcdCodeBlocks::Dec(c) => c,
                             _ => continue,
                         };
-                        for cblk in cblks {
-                            let decoded = match &cblk.decoded_data {
-                                Some(d) => d,
-                                None => continue,
-                            };
+                        for (cblkno, cblk) in cblks.iter().enumerate() {
+                            if cblk.decoded_data.is_none() {
+                                continue;
+                            }
                             let cblk_w = (cblk.x1 - cblk.x0).max(0) as usize;
                             let cblk_h = (cblk.y1 - cblk.y0).max(0) as usize;
                             if cblk_w == 0 || cblk_h == 0 {
@@ -649,13 +680,25 @@ impl Tcd {
                             }
                             let buf_x = (cblk.x0 - band.x0) as usize + x_off;
                             let buf_y = (cblk.y0 - band.y0) as usize + y_off;
-                            ops.push(CopyOp {
+
+                            // Validate bounds up front
+                            if buf_x + cblk_w > comp_w || buf_y + cblk_h > comp_h {
+                                return Err(Error::InvalidInput(format!(
+                                    "cblk at ({buf_x},{buf_y}) size ({cblk_w}x{cblk_h}) \
+                                     exceeds comp buffer ({comp_w}x{comp_h})"
+                                )));
+                            }
+
+                            descs.push(CopyDesc {
                                 compno,
+                                resno,
+                                bandno,
+                                precno,
+                                cblkno,
                                 buf_x,
                                 buf_y,
                                 cblk_w,
                                 cblk_h,
-                                data: decoded.clone(),
                                 qmfbid,
                                 stepsize: band.stepsize,
                             });
@@ -665,24 +708,55 @@ impl Tcd {
             }
         }
 
-        // Apply copy operations
-        for op in &ops {
-            let comp = &mut self.tile.comps[op.compno];
+        // Apply copy operations using descriptors (no clone of decoded data).
+        for desc in &descs {
+            let decoded = self.tile.comps[desc.compno].resolutions[desc.resno].bands[desc.bandno]
+                .precincts[desc.precno]
+                .cblks
+                .as_dec()
+                .and_then(|c| c[desc.cblkno].decoded_data.as_ref())
+                .ok_or_else(|| Error::InvalidInput("missing decoded data".into()))?;
+
+            if decoded.len() < desc.cblk_w * desc.cblk_h {
+                return Err(Error::InvalidInput(format!(
+                    "decoded_data len {} < expected {}",
+                    decoded.len(),
+                    desc.cblk_w * desc.cblk_h
+                )));
+            }
+
+            // Take decoded data out temporarily to allow mutable borrow of comp.data.
+            let decoded_data = self.tile.comps[desc.compno].resolutions[desc.resno].bands
+                [desc.bandno]
+                .precincts[desc.precno]
+                .cblks
+                .take_dec_decoded(desc.cblkno)
+                .ok_or_else(|| Error::InvalidInput("missing decoded data".into()))?;
+
+            let comp = &mut self.tile.comps[desc.compno];
             let comp_w = (comp.x1 - comp.x0) as usize;
-            for j in 0..op.cblk_h {
-                let src_off = j * op.cblk_w;
-                let dst_off = (op.buf_y + j) * comp_w + op.buf_x;
-                for i in 0..op.cblk_w {
-                    if src_off + i < op.data.len() && dst_off + i < comp.data.len() {
-                        let val = op.data[src_off + i];
-                        comp.data[dst_off + i] = if op.qmfbid == 1 {
-                            val / 2
-                        } else {
-                            (val as f32 * 0.5 * op.stepsize) as i32
-                        };
-                    }
+            for j in 0..desc.cblk_h {
+                let src_off = j * desc.cblk_w;
+                let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
+                for i in 0..desc.cblk_w {
+                    let val = decoded_data[src_off + i];
+                    // Dequantize: C: datap[i] /= 2 (reversible)
+                    //             C: val * 0.5f * band->stepsize (irreversible)
+                    // Note: our stepsize already includes 0.5 from init_tile,
+                    // so we use stepsize directly to match C's 0.5 * raw_stepsize.
+                    comp.data[dst_off + i] = if desc.qmfbid == 1 {
+                        val / 2
+                    } else {
+                        (val as f32 * desc.stepsize) as i32
+                    };
                 }
             }
+
+            // Restore decoded data
+            self.tile.comps[desc.compno].resolutions[desc.resno].bands[desc.bandno].precincts
+                [desc.precno]
+                .cblks
+                .restore_dec_decoded(desc.cblkno, decoded_data);
         }
         Ok(())
     }
