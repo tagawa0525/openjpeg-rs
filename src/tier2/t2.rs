@@ -492,7 +492,15 @@ fn collect_encode_segments(
     first_pass: u32,
     last_pass: u32,
     cblksty: u32,
-) -> Vec<(u32, u32)> {
+) -> Result<Vec<(u32, u32)>> {
+    if (last_pass as usize) > cblk.passes.len() {
+        return Err(Error::InvalidInput(format!(
+            "last_pass {} exceeds cblk.passes.len() {}",
+            last_pass,
+            cblk.passes.len()
+        )));
+    }
+
     let mut segments = Vec::new();
     let mut seg_start = first_pass;
 
@@ -512,23 +520,24 @@ fn collect_encode_segments(
         }
         let numpasses_in_seg = seg_end - seg_start;
 
-        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len() {
-            let end_rate = cblk.passes[seg_end as usize - 1].rate;
-            let start_rate = if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
-                cblk.passes[seg_start as usize - 1].rate
-            } else {
-                0
-            };
-            end_rate.saturating_sub(start_rate)
+        let end_rate = cblk.passes[seg_end as usize - 1].rate;
+        let start_rate = if seg_start > 0 {
+            cblk.passes[seg_start as usize - 1].rate
         } else {
             0
         };
+        if end_rate < start_rate {
+            return Err(Error::InvalidInput(format!(
+                "pass rates not monotonic: end_rate={end_rate} < start_rate={start_rate}"
+            )));
+        }
+        let seg_data_len = end_rate - start_rate;
 
         segments.push((numpasses_in_seg, seg_data_len));
         seg_start = seg_end;
     }
 
-    segments
+    Ok(segments)
 }
 
 /// Encode a single packet (header + body) for one (compno, resno, precno, layno).
@@ -696,7 +705,7 @@ pub fn t2_encode_packet(
                         first_pass_in_layer,
                         last_pass_in_layer,
                         cblksty,
-                    );
+                    )?;
 
                     // Compute minimum numlenbits increment needed
                     let mut increment = 0u32;
