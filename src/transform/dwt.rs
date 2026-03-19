@@ -1018,6 +1018,6 @@ mod tests {
         let mut data = original.clone();
         dwt_encode_2d_97(&mut data, w, h, w, 4).unwrap();
         dwt_decode_2d_97(&mut data, w, h, w, 4).unwrap();
-        assert_f32_eq(&data, &original, 0.1);
+        assert_f32_eq(&data, &original, 1e-3);
     }
 }
