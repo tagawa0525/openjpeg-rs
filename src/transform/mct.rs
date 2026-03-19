@@ -16,17 +16,9 @@ pub static MCT_NORMS_REAL: [f64; 3] = [1.732, 1.805, 1.573];
 #[cfg(feature = "parallel")]
 const MCT_PAR_THRESHOLD: usize = 4096;
 
-/// Forward reversible MCT (RCT) (C: opj_mct_encode).
-/// Y = (R + 2G + B) >> 2, Cb = B - G, Cr = R - G
-pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
-    debug_assert_eq!(c0.len(), c1.len());
-    debug_assert_eq!(c1.len(), c2.len());
+/// Scalar forward RCT kernel.
+pub(crate) fn mct_encode_scalar(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     let n = c0.len().min(c1.len()).min(c2.len());
-    #[cfg(feature = "parallel")]
-    if n > MCT_PAR_THRESHOLD {
-        mct_par_i32(c0, c1, c2, mct_encode_kernel_i32);
-        return;
-    }
     for i in 0..n {
         let r = c0[i];
         let g = c1[i];
@@ -37,17 +29,33 @@ pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     }
 }
 
-/// Inverse reversible MCT (RCT) (C: opj_mct_decode).
-/// G = Y - (Cb + Cr) >> 2, R = Cr + G, B = Cb + G
-pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+/// Forward reversible MCT (RCT) (C: opj_mct_encode).
+/// Y = (R + 2G + B) >> 2, Cb = B - G, Cr = R - G
+pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
-    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if n > MCT_PAR_THRESHOLD {
-        mct_par_i32(c0, c1, c2, mct_decode_kernel_i32);
+    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+        mct_par_i32(c0, c1, c2, mct_encode_kernel_i32);
         return;
     }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { super::mct_simd::mct_encode_avx2(c0, c1, c2) };
+            return;
+        }
+        if is_x86_feature_detected!("sse2") {
+            unsafe { super::mct_simd::mct_encode_sse2(c0, c1, c2) };
+            return;
+        }
+    }
+    mct_encode_scalar(c0, c1, c2);
+}
+
+/// Scalar inverse RCT kernel.
+pub(crate) fn mct_decode_scalar(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let y = c0[i];
         let u = c1[i];
@@ -59,16 +67,33 @@ pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     }
 }
 
-/// Forward irreversible MCT (ICT) (C: opj_mct_encode_real).
-pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+/// Inverse reversible MCT (RCT) (C: opj_mct_decode).
+/// G = Y - (Cb + Cr) >> 2, R = Cr + G, B = Cb + G
+pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
-    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if n > MCT_PAR_THRESHOLD {
-        mct_par_f32(c0, c1, c2, mct_encode_real_kernel);
+    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+        mct_par_i32(c0, c1, c2, mct_decode_kernel_i32);
         return;
     }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { super::mct_simd::mct_decode_avx2(c0, c1, c2) };
+            return;
+        }
+        if is_x86_feature_detected!("sse2") {
+            unsafe { super::mct_simd::mct_decode_sse2(c0, c1, c2) };
+            return;
+        }
+    }
+    mct_decode_scalar(c0, c1, c2);
+}
+
+/// Scalar forward ICT kernel.
+pub(crate) fn mct_encode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let r = c0[i];
         let g = c1[i];
@@ -79,16 +104,32 @@ pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     }
 }
 
-/// Inverse irreversible MCT (ICT) (C: opj_mct_decode_real).
-pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+/// Forward irreversible MCT (ICT) (C: opj_mct_encode_real).
+pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
-    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if n > MCT_PAR_THRESHOLD {
-        mct_par_f32(c0, c1, c2, mct_decode_real_kernel);
+    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+        mct_par_f32(c0, c1, c2, mct_encode_real_kernel);
         return;
     }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx") {
+            unsafe { super::mct_simd::mct_encode_real_avx(c0, c1, c2) };
+            return;
+        }
+        if is_x86_feature_detected!("sse") {
+            unsafe { super::mct_simd::mct_encode_real_sse(c0, c1, c2) };
+            return;
+        }
+    }
+    mct_encode_real_scalar(c0, c1, c2);
+}
+
+/// Scalar inverse ICT kernel.
+pub(crate) fn mct_decode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    let n = c0.len().min(c1.len()).min(c2.len());
     for i in 0..n {
         let y = c0[i];
         let u = c1[i];
@@ -97,6 +138,29 @@ pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
         c1[i] = y - u * 0.34413f32 - v * 0.71414f32;
         c2[i] = y + u * 1.772f32;
     }
+}
+
+/// Inverse irreversible MCT (ICT) (C: opj_mct_decode_real).
+pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    debug_assert_eq!(c0.len(), c1.len());
+    debug_assert_eq!(c1.len(), c2.len());
+    #[cfg(feature = "parallel")]
+    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+        mct_par_f32(c0, c1, c2, mct_decode_real_kernel);
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx") {
+            unsafe { super::mct_simd::mct_decode_real_avx(c0, c1, c2) };
+            return;
+        }
+        if is_x86_feature_detected!("sse") {
+            unsafe { super::mct_simd::mct_decode_real_sse(c0, c1, c2) };
+            return;
+        }
+    }
+    mct_decode_real_scalar(c0, c1, c2);
 }
 
 /// Get RCT normalization coefficient (C: opj_mct_getnorm).
@@ -180,57 +244,28 @@ pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> R
 // Parallel MCT dispatch (rayon::join + split_at_mut)
 // ---------------------------------------------------------------------------
 
-/// Sequential kernel for forward RCT.
+/// Sequential kernel for forward RCT (used by parallel dispatch).
 #[cfg(feature = "parallel")]
 fn mct_encode_kernel_i32(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
-    for i in 0..c0.len() {
-        let r = c0[i];
-        let g = c1[i];
-        let b = c2[i];
-        c0[i] = (r + (g * 2) + b) >> 2;
-        c1[i] = b - g;
-        c2[i] = r - g;
-    }
+    mct_encode_scalar(c0, c1, c2);
 }
 
-/// Sequential kernel for inverse RCT.
+/// Sequential kernel for inverse RCT (used by parallel dispatch).
 #[cfg(feature = "parallel")]
 fn mct_decode_kernel_i32(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
-    for i in 0..c0.len() {
-        let y = c0[i];
-        let u = c1[i];
-        let v = c2[i];
-        let g = y - ((u + v) >> 2);
-        c0[i] = v + g;
-        c1[i] = g;
-        c2[i] = u + g;
-    }
+    mct_decode_scalar(c0, c1, c2);
 }
 
-/// Sequential kernel for forward ICT.
+/// Sequential kernel for forward ICT (used by parallel dispatch).
 #[cfg(feature = "parallel")]
 fn mct_encode_real_kernel(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
-    for i in 0..c0.len() {
-        let r = c0[i];
-        let g = c1[i];
-        let b = c2[i];
-        c0[i] = 0.299f32 * r + 0.587f32 * g + 0.114f32 * b;
-        c1[i] = -0.16875f32 * r - 0.331260f32 * g + 0.5f32 * b;
-        c2[i] = 0.5f32 * r - 0.41869f32 * g - 0.08131f32 * b;
-    }
+    mct_encode_real_scalar(c0, c1, c2);
 }
 
-/// Sequential kernel for inverse ICT.
+/// Sequential kernel for inverse ICT (used by parallel dispatch).
 #[cfg(feature = "parallel")]
 fn mct_decode_real_kernel(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
-    for i in 0..c0.len() {
-        let y = c0[i];
-        let u = c1[i];
-        let v = c2[i];
-        c0[i] = y + v * 1.402f32;
-        c1[i] = y - u * 0.34413f32 - v * 0.71414f32;
-        c2[i] = y + u * 1.772f32;
-    }
+    mct_decode_real_scalar(c0, c1, c2);
 }
 
 /// Recursive parallel MCT dispatch for i32 slices.
