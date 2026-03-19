@@ -416,6 +416,7 @@ pub fn t2_read_packet_data(
                     seg_idx += 1;
                 }
                 cblk.real_num_segs = cblk.numsegs;
+                cblk.numnewpasses = 0;
             }
         }
     }
