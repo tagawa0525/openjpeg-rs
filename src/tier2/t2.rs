@@ -487,27 +487,368 @@ pub fn t2_decode_packets(
 /// Returns the number of bytes written.
 /// (C: opj_t2_encode_packet)
 pub fn t2_encode_packet(
-    _tile: &mut TcdTile,
-    _compno: u32,
-    _resno: u32,
-    _precno: u32,
-    _layno: u32,
-    _cblksty: u32,
-    _dest: &mut [u8],
+    tile: &mut TcdTile,
+    compno: u32,
+    resno: u32,
+    precno: u32,
+    layno: u32,
+    cblksty: u32,
+    dest: &mut [u8],
 ) -> Result<usize> {
-    todo!("Phase 1100d: t2_encode_packet")
+    let comp = tile
+        .comps
+        .get_mut(compno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("compno {compno} out of range")))?;
+    let res = comp
+        .resolutions
+        .get_mut(resno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("resno {resno} out of range")))?;
+
+    // --- On first layer, reset tag trees and cblk state ---
+    if layno == 0 {
+        for band in &mut res.bands {
+            if band.is_empty() {
+                continue;
+            }
+            let prec = match band.precincts.get_mut(precno as usize) {
+                Some(p) => p,
+                None => continue,
+            };
+            if let Some(ref mut incl) = prec.incltree {
+                incl.reset();
+            }
+            if let Some(ref mut imsb) = prec.imsbtree {
+                imsb.reset();
+            }
+            let band_numbps = band.numbps;
+            if let TcdCodeBlocks::Enc(ref mut cblks) = prec.cblks {
+                for (cblkno, cblk) in cblks.iter_mut().enumerate() {
+                    cblk.numpasses = 0;
+                    cblk.numlenbits = 3;
+                    // Set IMSB value: band_numbps - cblk_numbps (C: opj_tgt_setvalue)
+                    if let Some(ref mut imsb) = prec.imsbtree {
+                        imsb.set_value(
+                            cblkno as u32,
+                            (band_numbps as u32).saturating_sub(cblk.numbps) as i32,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Check if any cblk has data in this layer ---
+    let numbands = res.numbands;
+    let mut packet_empty = true;
+    for bandno in 0..numbands {
+        let band = &res.bands[bandno as usize];
+        if band.is_empty() {
+            continue;
+        }
+        if let Some(prec) = band.precincts.get(precno as usize) {
+            if let TcdCodeBlocks::Enc(ref cblks) = prec.cblks {
+                let num_cblks = (prec.cw * prec.ch) as usize;
+                for cblk in cblks.iter().take(num_cblks) {
+                    if cblk
+                        .layers
+                        .get(layno as usize)
+                        .is_some_and(|l| l.numpasses > 0)
+                    {
+                        packet_empty = false;
+                        break;
+                    }
+                }
+            }
+            if !packet_empty {
+                break;
+            }
+        }
+    }
+
+    // --- Write packet header via BIO ---
+    let header_len;
+    {
+        let mut bio = Bio::encoder(dest);
+
+        if packet_empty {
+            // Empty packet: present bit = 0
+            bio.write(0, 1)?;
+            bio.flush()?;
+            return Ok(bio.num_bytes());
+        }
+
+        // Present bit = 1
+        bio.write(1, 1)?;
+
+        // Re-borrow res after mutable phase
+        let comp = &mut tile.comps[compno as usize];
+        let res = &mut comp.resolutions[resno as usize];
+
+        // Process each band's code blocks
+        for bandno in 0..numbands {
+            let band = &mut res.bands[bandno as usize];
+            if band.is_empty() {
+                continue;
+            }
+            let prec = match band.precincts.get_mut(precno as usize) {
+                Some(p) => p,
+                None => continue,
+            };
+            let num_cblks = (prec.cw * prec.ch) as usize;
+
+            if let TcdCodeBlocks::Enc(ref mut cblks) = prec.cblks {
+                #[allow(clippy::needless_range_loop)]
+                for cblkno in 0..num_cblks {
+                    let cblk = &cblks[cblkno];
+                    let layer = match cblk.layers.get(layno as usize) {
+                        Some(l) => l,
+                        None => continue,
+                    };
+
+                    // --- Inclusion ---
+                    if cblk.numpasses == 0 {
+                        // First inclusion: use tag tree
+                        if let Some(ref mut incltree) = prec.incltree {
+                            incltree.set_value(
+                                cblkno as u32,
+                                if layer.numpasses > 0 {
+                                    layno as i32
+                                } else {
+                                    (layno + 1) as i32
+                                },
+                            );
+                            incltree.encode(&mut bio, cblkno as u32, (layno + 1) as i32)?;
+                        }
+                    } else {
+                        // Already included: write 1 bit
+                        bio.write(if layer.numpasses > 0 { 1 } else { 0 }, 1)?;
+                    }
+
+                    if layer.numpasses == 0 {
+                        continue;
+                    }
+
+                    // --- IMSB (first inclusion only) ---
+                    if cblk.numpasses == 0
+                        && let Some(ref mut imsbtree) = prec.imsbtree
+                    {
+                        imsbtree.encode(&mut bio, cblkno as u32, 999)?;
+                    }
+
+                    // --- Number of passes ---
+                    t2_putnumpasses(&mut bio, layer.numpasses)?;
+
+                    let cblk = &cblks[cblkno];
+
+                    // --- Length increment ---
+                    // Compute minimum numlenbits increment needed for all segment lengths
+                    let first_pass_in_layer = cblk.numpasses;
+                    let last_pass_in_layer = first_pass_in_layer + layer.numpasses;
+                    let mut increment = 0u32;
+                    let mut seg_start = first_pass_in_layer;
+
+                    while seg_start < last_pass_in_layer {
+                        // Find segment end: at terminating pass or end of layer
+                        let mut seg_end = seg_start + 1;
+                        while seg_end < last_pass_in_layer {
+                            if (cblksty
+                                & (crate::types::J2K_CCP_CBLKSTY_TERMALL
+                                    | crate::types::J2K_CCP_CBLKSTY_LAZY))
+                                != 0
+                            {
+                                let pass_idx = seg_end as usize - 1;
+                                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
+                                    break;
+                                }
+                            }
+                            seg_end += 1;
+                        }
+                        let numpasses_in_seg = seg_end - seg_start;
+
+                        // Compute segment data length
+                        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len()
+                        {
+                            let end_rate = cblk.passes[seg_end as usize - 1].rate;
+                            let start_rate =
+                                if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
+                                    cblk.passes[seg_start as usize - 1].rate
+                                } else {
+                                    0
+                                };
+                            end_rate.saturating_sub(start_rate)
+                        } else {
+                            0
+                        };
+
+                        // Compute bits needed: we need enough bits to represent seg_data_len
+                        // bit_width = numlenbits + floorlog2(numpasses_in_seg)
+                        let passno_bits = uint_floorlog2(numpasses_in_seg);
+                        let available_bits = cblk.numlenbits + passno_bits;
+                        let needed_bits = if seg_data_len > 0 {
+                            uint_floorlog2(seg_data_len) + 1
+                        } else {
+                            0
+                        };
+                        if needed_bits > available_bits {
+                            let new_inc = needed_bits - available_bits;
+                            if new_inc > increment {
+                                increment = new_inc;
+                            }
+                        }
+
+                        seg_start = seg_end;
+                    }
+
+                    t2_putcommacode(&mut bio, increment)?;
+
+                    // --- Segment lengths ---
+                    let cblk = &mut cblks[cblkno];
+                    cblk.numlenbits += increment;
+                    let mut seg_start = first_pass_in_layer;
+
+                    while seg_start < last_pass_in_layer {
+                        let mut seg_end = seg_start + 1;
+                        while seg_end < last_pass_in_layer {
+                            if (cblksty
+                                & (crate::types::J2K_CCP_CBLKSTY_TERMALL
+                                    | crate::types::J2K_CCP_CBLKSTY_LAZY))
+                                != 0
+                            {
+                                let pass_idx = seg_end as usize - 1;
+                                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
+                                    break;
+                                }
+                            }
+                            seg_end += 1;
+                        }
+                        let numpasses_in_seg = seg_end - seg_start;
+                        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len()
+                        {
+                            let end_rate = cblk.passes[seg_end as usize - 1].rate;
+                            let start_rate =
+                                if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
+                                    cblk.passes[seg_start as usize - 1].rate
+                                } else {
+                                    0
+                                };
+                            end_rate.saturating_sub(start_rate)
+                        } else {
+                            0
+                        };
+
+                        let bit_width = cblk.numlenbits + uint_floorlog2(numpasses_in_seg);
+                        bio.write(seg_data_len, bit_width)?;
+
+                        seg_start = seg_end;
+                    }
+                }
+            }
+        }
+
+        bio.flush()?;
+        header_len = bio.num_bytes();
+    }
+
+    // --- Write packet body: code block data ---
+    let mut offset = header_len;
+    let comp = &mut tile.comps[compno as usize];
+    let res = &mut comp.resolutions[resno as usize];
+
+    for bandno in 0..numbands {
+        let band = &mut res.bands[bandno as usize];
+        if band.is_empty() {
+            continue;
+        }
+        let prec = match band.precincts.get_mut(precno as usize) {
+            Some(p) => p,
+            None => continue,
+        };
+        let num_cblks = (prec.cw * prec.ch) as usize;
+
+        if let TcdCodeBlocks::Enc(ref mut cblks) = prec.cblks {
+            for cblk in cblks.iter_mut().take(num_cblks) {
+                let layer = match cblk.layers.get(layno as usize) {
+                    Some(l) => l.clone(),
+                    None => continue,
+                };
+                if layer.numpasses == 0 {
+                    continue;
+                }
+
+                let data_start = layer.data_offset as usize;
+                let data_end = data_start + layer.len as usize;
+                if data_end > cblk.data.len() {
+                    return Err(Error::InvalidInput(format!(
+                        "cblk data range {}..{} exceeds data len {}",
+                        data_start,
+                        data_end,
+                        cblk.data.len()
+                    )));
+                }
+                if offset + layer.len as usize > dest.len() {
+                    return Err(Error::EndOfStream);
+                }
+                dest[offset..offset + layer.len as usize]
+                    .copy_from_slice(&cblk.data[data_start..data_end]);
+                offset += layer.len as usize;
+
+                // Update cumulative pass count
+                cblk.numpasses += layer.numpasses;
+            }
+        }
+    }
+
+    Ok(offset)
 }
 
 /// Encode all packets for a tile using packet iterators.
 /// Returns total bytes written.
 /// (C: opj_t2_encode_packets)
 pub fn t2_encode_packets(
-    _tile: &mut TcdTile,
-    _tcp: &crate::j2k::params::TileCodingParameters,
-    _pis: &mut crate::tier2::pi::PacketIterators,
-    _dest: &mut [u8],
+    tile: &mut TcdTile,
+    tcp: &crate::j2k::params::TileCodingParameters,
+    pis: &mut crate::tier2::pi::PacketIterators,
+    dest: &mut [u8],
 ) -> Result<usize> {
-    todo!("Phase 1100d: t2_encode_packets")
+    let mut total_written = 0usize;
+
+    for pino in 0..pis.len() {
+        while pis.next(pino) {
+            let pi = pis.get(pino);
+            let layno = pi.layno;
+            let compno = pi.compno;
+            let resno = pi.resno;
+            let precno = pi.precno;
+
+            // Skip layers beyond numlayers
+            if layno >= tcp.numlayers {
+                continue;
+            }
+
+            let cblksty = tcp
+                .tccps
+                .get(compno as usize)
+                .ok_or_else(|| Error::InvalidInput(format!("missing TCCP for component {compno}")))?
+                .cblksty;
+
+            if total_written >= dest.len() {
+                return Err(Error::EndOfStream);
+            }
+
+            let bytes = t2_encode_packet(
+                tile,
+                compno,
+                resno,
+                precno,
+                layno,
+                cblksty,
+                &mut dest[total_written..],
+            )?;
+            total_written += bytes;
+        }
+    }
+
+    Ok(total_written)
 }
 
 pub fn t2_decode_packet(
@@ -1025,7 +1366,6 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_encode_empty_packet() {
         // Layer with 0 passes — should write a single "not present" bit
         let layers = vec![TcdLayer {
@@ -1044,7 +1384,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_encode_single_cblk_packet() {
         // 1 cblk, 1 layer with 1 pass, 5 bytes of data
         let cblk_data = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
@@ -1070,7 +1409,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_encode_decode_roundtrip() {
         // Encode a packet, then decode it and verify the data matches
         let cblk_data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
@@ -1111,7 +1449,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_encode_packets_single_layer() {
         use crate::j2k::params::Poc;
         use crate::tier2::pi::{PacketIterators, PiComp, PiIterator, PiResolution};
@@ -1195,7 +1532,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_encode_multi_pass_single_layer() {
         // Cblk with 3 passes, all in layer 0
         let cblk_data = vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0];
