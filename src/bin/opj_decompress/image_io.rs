@@ -1,7 +1,7 @@
 // Image format I/O for CLI tools.
 //
-// Supports PGM/PPM (Portable Graymap/Pixmap, binary P5/P6) and PGX
-// (JPEG 2000 test format). No external dependencies required.
+// Supports PGM/PPM (Portable Graymap/Pixmap, binary P5/P6), PGX
+// (JPEG 2000 test format), and PNG (when `cli-png` feature is enabled).
 
 use openjpeg_rs::image::Image;
 use std::fs::File;
@@ -15,6 +15,8 @@ pub enum ImageFormat {
     Pnm,
     /// PGX (JPEG 2000 single-component test format).
     Pgx,
+    /// PNG (requires `cli-png` feature).
+    Png,
 }
 
 /// Detect output format from file extension.
@@ -23,6 +25,7 @@ pub fn detect_output_format(path: &Path) -> Option<ImageFormat> {
     match ext.as_str() {
         "pgm" | "ppm" | "pnm" => Some(ImageFormat::Pnm),
         "pgx" => Some(ImageFormat::Pgx),
+        "png" => Some(ImageFormat::Png),
         _ => None,
     }
 }
@@ -32,6 +35,7 @@ pub fn write_image(image: &Image, path: &Path, format: ImageFormat) -> io::Resul
     match format {
         ImageFormat::Pnm => write_pnm(image, path),
         ImageFormat::Pgx => write_pgx(image, path),
+        ImageFormat::Png => write_png(image, path),
     }
 }
 
@@ -141,6 +145,82 @@ fn write_pgx(image: &Image, path: &Path) -> io::Result<()> {
     writer.flush()
 }
 
+/// Write image as PNG.
+///
+/// Supports 8-bit and 16-bit grayscale (1 component) and RGB (3 components).
+/// When compiled without `cli-png` feature, returns an error.
+#[cfg(feature = "cli-png")]
+fn write_png(image: &Image, path: &Path) -> io::Result<()> {
+    if image.comps.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no components"));
+    }
+
+    let nc = image.comps.len();
+    if nc != 1 && nc != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("PNG requires 1 or 3 components, got {nc}"),
+        ));
+    }
+
+    let w = image.comps[0].w;
+    let h = image.comps[0].h;
+    let prec = image.comps[0].prec;
+    let maxval = (1u32 << prec) - 1;
+
+    let color_type = if nc == 1 {
+        png::ColorType::Grayscale
+    } else {
+        png::ColorType::Rgb
+    };
+    let bit_depth = if prec > 8 {
+        png::BitDepth::Sixteen
+    } else {
+        png::BitDepth::Eight
+    };
+
+    let file = File::create(path)?;
+    let bw = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(bw, w, h);
+    encoder.set_color(color_type);
+    encoder.set_depth(bit_depth);
+
+    let mut writer = encoder.write_header().map_err(io::Error::other)?;
+
+    // Build row data
+    let mut buf = Vec::new();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            for c in 0..nc {
+                let idx = y * w as usize + x;
+                let val = if idx < image.comps[c].data.len() {
+                    image.comps[c].data[idx].max(0) as u32
+                } else {
+                    0
+                };
+                let clamped = val.min(maxval);
+                if prec > 8 {
+                    buf.extend_from_slice(&(clamped as u16).to_be_bytes());
+                } else {
+                    buf.push(clamped as u8);
+                }
+            }
+        }
+    }
+
+    writer.write_image_data(&buf).map_err(io::Error::other)?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "cli-png"))]
+fn write_png(_image: &Image, _path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "PNG output requires --features cli-png",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +282,10 @@ mod tests {
             detect_output_format(Path::new("test.pgx")),
             Some(ImageFormat::Pgx)
         );
+        assert_eq!(
+            detect_output_format(Path::new("test.png")),
+            Some(ImageFormat::Png)
+        );
         assert_eq!(detect_output_format(Path::new("test.jpg")), None);
     }
 
@@ -259,5 +343,63 @@ mod tests {
         assert_eq!(&data[header_end..], &[10, 20, 30, 40]);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[cfg(feature = "cli-png")]
+    fn write_png_gray_2x2() {
+        let img = make_gray_image(2, 2, 8, vec![10, 20, 30, 40]);
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_write_png_gray_2x2.png");
+
+        write_image(&img, &path, ImageFormat::Png).unwrap();
+
+        // Verify it's a valid PNG by reading it back
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &data[..8],
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        ); // PNG magic
+
+        let decoder = png::Decoder::new(std::io::Cursor::new(&data));
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        assert_eq!(info.width, 2);
+        assert_eq!(info.height, 2);
+        assert_eq!(info.color_type, png::ColorType::Grayscale);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[cfg(feature = "cli-png")]
+    fn write_png_rgb_2x1() {
+        let img = make_rgb_image(2, 1, vec![255, 0], vec![0, 255], vec![0, 0]);
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_write_png_rgb_2x1.png");
+
+        write_image(&img, &path, ImageFormat::Png).unwrap();
+
+        let data = std::fs::read(&path).unwrap();
+        let decoder = png::Decoder::new(std::io::Cursor::new(&data));
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        assert_eq!(info.width, 2);
+        assert_eq!(info.height, 1);
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    #[cfg(not(feature = "cli-png"))]
+    fn write_png_without_feature_errors() {
+        let img = make_gray_image(2, 2, 8, vec![10, 20, 30, 40]);
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_write_png_no_feature.png");
+
+        let result = write_image(&img, &path, ImageFormat::Png);
+        assert!(result.is_err());
     }
 }
