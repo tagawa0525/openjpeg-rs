@@ -46,6 +46,7 @@ pub fn decode_owned(data: Vec<u8>, format: CodecFormat) -> Result<Image> {
             let mut dec = J2kDecoder::new();
             dec.read_header(&mut stream)?;
             dec.read_all_tiles(&mut stream)?;
+            dec.decode_tiles()?;
             Ok(dec.image)
         }
         CodecFormat::Jp2 => {
@@ -259,27 +260,23 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-
     fn detect_format_j2k() {
         let j2k = build_minimal_j2k(8, 8, 1);
         assert_eq!(detect_format(&j2k), Some(CodecFormat::J2k));
     }
 
     #[test]
-
     fn detect_format_jp2() {
         let jp2 = build_minimal_jp2();
         assert_eq!(detect_format(&jp2), Some(CodecFormat::Jp2));
     }
 
     #[test]
-
     fn detect_format_unknown() {
         assert_eq!(detect_format(&[0x00, 0x01, 0x02, 0x03]), None);
     }
 
     #[test]
-
     fn detect_format_too_short() {
         assert_eq!(detect_format(&[0xFF]), None);
     }
@@ -298,7 +295,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_j2k_produces_pixels() {
         let j2k = build_minimal_j2k(8, 8, 1);
         let image = decode(&j2k, CodecFormat::J2k).unwrap();
@@ -306,7 +302,6 @@ mod tests {
     }
 
     #[test]
-
     fn decode_jp2_basic() {
         let jp2 = build_minimal_jp2();
         let image = decode(&jp2, CodecFormat::Jp2).unwrap();
@@ -317,7 +312,6 @@ mod tests {
     }
 
     #[test]
-
     fn decode_empty_fails() {
         assert!(decode(&[], CodecFormat::J2k).is_err());
     }
@@ -327,7 +321,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-
     fn encode_decode_roundtrip_jp2() {
         let params: Vec<_> = (0..3)
             .map(|_| ImageCompParam {

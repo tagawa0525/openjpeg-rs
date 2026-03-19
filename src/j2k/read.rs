@@ -338,7 +338,96 @@ impl J2kDecoder {
     /// runs the decode pipeline (T2→T1→DWT→MCT→DC shift), and copies decoded
     /// pixels into `self.image.comps[*].data`.
     pub fn decode_tiles(&mut self) -> Result<()> {
-        todo!("Phase 1100c: decode_tiles")
+        use crate::tcd::Tcd;
+        use crate::types::int_ceildiv;
+
+        let num_tiles = self.num_tiles();
+
+        // Compute DC level shift from image precision (C: set in opj_j2k_read_siz)
+        for tcp in &mut self.cp.tcps {
+            for (compno, tccp) in tcp.tccps.iter_mut().enumerate() {
+                if let Some(img_comp) = self.image.comps.get(compno)
+                    && !img_comp.sgnd
+                    && img_comp.prec > 0
+                {
+                    tccp.m_dc_level_shift = 1 << (img_comp.prec - 1);
+                }
+            }
+        }
+
+        // Allocate image component data buffers
+        for comp in &mut self.image.comps {
+            let w = (comp.w) as usize;
+            let h = (comp.h) as usize;
+            if comp.data.len() < w * h {
+                comp.data.resize(w * h, 0);
+            }
+        }
+
+        for tileno in 0..num_tiles {
+            let tile_idx = tileno as usize;
+            if tile_idx >= self.tile_data.len() || self.tile_data[tile_idx].is_empty() {
+                continue;
+            }
+
+            let tcp = self
+                .cp
+                .tcps
+                .get(tile_idx)
+                .ok_or_else(|| Error::InvalidInput(format!("missing TCP for tile {tileno}")))?;
+
+            // Initialize TCD and build tile hierarchy
+            let mut tcd = Tcd::new(true);
+            tcd.init_tile(tileno, &self.image, &self.cp, tcp, false)?;
+
+            // Decode tile: T2→T1→copy→DWT→MCT→DC shift
+            tcd.decode_tile(&mut self.tile_data[tile_idx], &self.image, &self.cp, tcp)?;
+
+            // Copy decoded pixel data from TCD tile to Image components.
+            // Each tile covers a region of the image; place pixels accordingly.
+            let p = tileno % self.cp.tw;
+            let q = tileno / self.cp.tw;
+            let tx0 = (self.cp.tx0 + p * self.cp.tdx).max(self.image.x0);
+            let ty0 = (self.cp.ty0 + q * self.cp.tdy).max(self.image.y0);
+
+            for (compno, tcd_comp) in tcd.tile.comps.iter().enumerate() {
+                let img_comp = match self.image.comps.get(compno) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let dx = img_comp.dx.max(1);
+                let dy = img_comp.dy.max(1);
+
+                // Tile component origin in component coordinates
+                let tc_x0 = int_ceildiv(tx0 as i32, dx as i32);
+                let tc_y0 = int_ceildiv(ty0 as i32, dy as i32);
+
+                // Image component origin
+                let img_x0 = int_ceildiv(self.image.x0 as i32, dx as i32);
+                let img_y0 = int_ceildiv(self.image.y0 as i32, dy as i32);
+                let img_w = img_comp.w as usize;
+
+                let tc_w = (tcd_comp.x1 - tcd_comp.x0).max(0) as usize;
+                let tc_h = (tcd_comp.y1 - tcd_comp.y0).max(0) as usize;
+
+                // Offset of this tile within the image buffer
+                let off_x = (tc_x0 - img_x0) as usize;
+                let off_y = (tc_y0 - img_y0) as usize;
+
+                let img_data = &mut self.image.comps[compno].data;
+                for j in 0..tc_h {
+                    let src_off = j * tc_w;
+                    let dst_off = (off_y + j) * img_w + off_x;
+                    for i in 0..tc_w {
+                        if src_off + i < tcd_comp.data.len() && dst_off + i < img_data.len() {
+                            img_data[dst_off + i] = tcd_comp.data[src_off + i];
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -465,7 +554,6 @@ mod tests {
     // --- decode_tiles ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_tiles_produces_pixel_data() {
         // After decode_tiles(), image.comps[0].data should be non-empty
         // and contain the DC-shifted value for a 1x1 grayscale image.
