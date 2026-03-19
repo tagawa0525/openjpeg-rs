@@ -394,7 +394,7 @@ pub fn t2_read_packet_data(
                     let newlen = seg.newlen as usize;
                     if offset + newlen > data.len() {
                         cblk.corrupted = true;
-                        return Ok(offset);
+                        return Err(Error::EndOfStream);
                     }
 
                     // Store data chunk
