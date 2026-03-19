@@ -900,6 +900,29 @@ impl Tcd {
             }
         }
     }
+
+    /// Build quality layers from encoded codeblock passes (fixed quality).
+    ///
+    /// Places all passes into layers without rate-distortion optimization.
+    /// For single-layer encoding, all passes go into layer 0.
+    /// (C: opj_tcd_makelayer_fixed + simplified opj_tcd_makelayer)
+    pub fn makelayer_fixed(&mut self, _tcp: &TileCodingParameters) {
+        todo!("Phase 1100e: makelayer_fixed")
+    }
+
+    /// Encode a tile: DC shift → MCT → DWT → T1 → makelayer → T2.
+    ///
+    /// Returns the number of bytes written to the output buffer.
+    /// (C: opj_tcd_encode_tile)
+    pub fn encode_tile(
+        &mut self,
+        _image: &Image,
+        _cp: &CodingParameters,
+        _tcp: &TileCodingParameters,
+        _dest: &mut [u8],
+    ) -> Result<usize> {
+        todo!("Phase 1100e: encode_tile")
+    }
 }
 
 #[cfg(test)]
@@ -1555,6 +1578,148 @@ mod tests {
         for &val in &comp.data {
             assert_eq!(val, 128);
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Encode pipeline tests
+    // ---------------------------------------------------------------------------
+
+    /// Create encoding test setup with pixel data populated.
+    fn create_encode_test_setup() -> (Image, CodingParameters, TileCodingParameters) {
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 8,
+            h: 8,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 8;
+        image.y1 = 8;
+        // Fill with a simple gradient pattern
+        image.comps[0].data = (0..64).map(|i| i as i32 * 4).collect();
+
+        let tccp = TileCompCodingParameters {
+            numresolutions: 1, // single resolution for simplicity
+            cblkw: 6,          // 64 (larger than 8x8 so one cblk covers all)
+            cblkh: 6,
+            qmfbid: 1,             // 5-3 reversible
+            m_dc_level_shift: 128, // 8-bit unsigned → shift by 128
+            ..Default::default()
+        };
+        let tcp = TileCodingParameters {
+            numlayers: 1,
+            tccps: vec![tccp],
+            ..Default::default()
+        };
+
+        let cp = CodingParameters {
+            tx0: 0,
+            ty0: 0,
+            tdx: 8,
+            tdy: 8,
+            tw: 1,
+            th: 1,
+            tcps: vec![tcp.clone()],
+            mode: CodingParamMode::Encoder(EncodingParam::default()),
+            ..CodingParameters::new_encoder()
+        };
+
+        (image, cp, tcp)
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn makelayer_fixed_single_layer() {
+        let (image, cp, tcp) = create_encode_test_setup();
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+
+        // Copy pixel data to tile component
+        tcd.tile.comps[0].data = image.comps[0].data.clone();
+
+        // DC level shift + T1 encode (to populate passes)
+        tcd.dc_level_shift_encode(&tcp);
+        crate::coding::t1::t1_encode_cblks(&mut tcd.tile, &tcp, None, 1).unwrap();
+
+        // makelayer_fixed: all passes → single layer
+        tcd.makelayer_fixed(&tcp);
+
+        // Verify: each cblk should have a layer with numpasses > 0
+        for comp in &tcd.tile.comps {
+            for res in &comp.resolutions {
+                for band in &res.bands {
+                    for prec in &band.precincts {
+                        if let TcdCodeBlocks::Enc(ref cblks) = prec.cblks {
+                            for cblk in cblks {
+                                if cblk.totalpasses > 0 {
+                                    assert!(
+                                        !cblk.layers.is_empty(),
+                                        "cblk with passes should have layers"
+                                    );
+                                    assert!(
+                                        cblk.layers[0].numpasses > 0,
+                                        "layer 0 should have passes"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_tile_produces_output() {
+        let (image, cp, tcp) = create_encode_test_setup();
+        let mut tcd = Tcd::new(true);
+        tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+
+        // Copy pixel data to tile
+        tcd.tile.comps[0].data = image.comps[0].data.clone();
+
+        let mut output = vec![0u8; 4096];
+        let bytes_written = tcd.encode_tile(&image, &cp, &tcp, &mut output).unwrap();
+        assert!(bytes_written > 0, "encode_tile should produce output");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_decode_roundtrip_single_tile() {
+        let (image, cp, tcp) = create_encode_test_setup();
+
+        // Encode
+        let mut enc_tcd = Tcd::new(true);
+        enc_tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+        enc_tcd.tile.comps[0].data = image.comps[0].data.clone();
+
+        let mut encoded = vec![0u8; 8192];
+        let enc_len = enc_tcd
+            .encode_tile(&image, &cp, &tcp, &mut encoded)
+            .unwrap();
+
+        // Decode
+        let dec_cp = CodingParameters {
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..cp.clone()
+        };
+        let mut dec_tcd = Tcd::new(false);
+        dec_tcd.init_tile(0, &image, &dec_cp, &tcp, false).unwrap();
+        dec_tcd
+            .decode_tile(&mut encoded[..enc_len], &image, &dec_cp, &tcp)
+            .unwrap();
+
+        // Verify pixel data matches (5-3 reversible should be lossless)
+        assert_eq!(dec_tcd.tile.comps[0].data.len(), 64);
+        assert_eq!(
+            &dec_tcd.tile.comps[0].data, &image.comps[0].data,
+            "roundtrip should be lossless for 5-3 reversible"
+        );
     }
 
     #[test]
