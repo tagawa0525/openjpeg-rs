@@ -349,8 +349,9 @@ impl J2kDecoder {
                 if let Some(img_comp) = self.image.comps.get(compno)
                     && !img_comp.sgnd
                     && img_comp.prec > 0
+                    && img_comp.prec <= 31
                 {
-                    tccp.m_dc_level_shift = 1 << (img_comp.prec - 1);
+                    tccp.m_dc_level_shift = 1i32 << (img_comp.prec - 1);
                 }
             }
         }
@@ -366,8 +367,10 @@ impl J2kDecoder {
 
         for tileno in 0..num_tiles {
             let tile_idx = tileno as usize;
-            if tile_idx >= self.tile_data.len() || self.tile_data[tile_idx].is_empty() {
-                continue;
+            if tile_idx >= self.tile_data.len() {
+                return Err(Error::InvalidInput(format!(
+                    "missing tile data for tile {tileno}"
+                )));
             }
 
             let tcp = self
@@ -413,16 +416,29 @@ impl J2kDecoder {
                 // Offset of this tile within the image buffer
                 let off_x = (tc_x0 - img_x0) as usize;
                 let off_y = (tc_y0 - img_y0) as usize;
+                let img_h = img_comp.h as usize;
+
+                // Validate tile region fits within image buffer
+                if off_x + tc_w > img_w || off_y + tc_h > img_h {
+                    return Err(Error::InvalidInput(format!(
+                        "tile {tileno} comp {compno}: region ({off_x},{off_y})+({tc_w}x{tc_h}) \
+                         exceeds image ({img_w}x{img_h})"
+                    )));
+                }
+                if tcd_comp.data.len() < tc_w * tc_h {
+                    return Err(Error::InvalidInput(format!(
+                        "tile {tileno} comp {compno}: decoded {} samples, expected {}",
+                        tcd_comp.data.len(),
+                        tc_w * tc_h
+                    )));
+                }
 
                 let img_data = &mut self.image.comps[compno].data;
                 for j in 0..tc_h {
                     let src_off = j * tc_w;
                     let dst_off = (off_y + j) * img_w + off_x;
-                    for i in 0..tc_w {
-                        if src_off + i < tcd_comp.data.len() && dst_off + i < img_data.len() {
-                            img_data[dst_off + i] = tcd_comp.data[src_off + i];
-                        }
-                    }
+                    img_data[dst_off..dst_off + tc_w]
+                        .copy_from_slice(&tcd_comp.data[src_off..src_off + tc_w]);
                 }
             }
         }
