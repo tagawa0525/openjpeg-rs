@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::io::bio::Bio;
-use crate::tcd::{TcdCodeBlocks, TcdSeg, TcdSegDataChunk, TcdTile};
+use crate::tcd::{TcdCblkEnc, TcdCodeBlocks, TcdSeg, TcdSegDataChunk, TcdTile};
 use crate::types::{J2K_CCP_CBLKSTY_LAZY, J2K_CCP_CBLKSTY_TERMALL, uint_floorlog2};
 
 // ---------------------------------------------------------------------------
@@ -483,6 +483,54 @@ pub fn t2_decode_packets(
 // Packet encode (C: opj_t2_encode_packet / opj_t2_encode_packets)
 // ---------------------------------------------------------------------------
 
+/// Collect encoding segments for a code block's layer.
+///
+/// Returns `(numpasses_in_segment, data_length)` for each segment in the layer.
+/// Segments are split at terminating passes when TERMALL or LAZY cblk style is set.
+fn collect_encode_segments(
+    cblk: &TcdCblkEnc,
+    first_pass: u32,
+    last_pass: u32,
+    cblksty: u32,
+) -> Vec<(u32, u32)> {
+    let mut segments = Vec::new();
+    let mut seg_start = first_pass;
+
+    while seg_start < last_pass {
+        let mut seg_end = seg_start + 1;
+        while seg_end < last_pass {
+            if (cblksty
+                & (crate::types::J2K_CCP_CBLKSTY_TERMALL | crate::types::J2K_CCP_CBLKSTY_LAZY))
+                != 0
+            {
+                let pass_idx = seg_end as usize - 1;
+                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
+                    break;
+                }
+            }
+            seg_end += 1;
+        }
+        let numpasses_in_seg = seg_end - seg_start;
+
+        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len() {
+            let end_rate = cblk.passes[seg_end as usize - 1].rate;
+            let start_rate = if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
+                cblk.passes[seg_start as usize - 1].rate
+            } else {
+                0
+            };
+            end_rate.saturating_sub(start_rate)
+        } else {
+            0
+        };
+
+        segments.push((numpasses_in_seg, seg_data_len));
+        seg_start = seg_end;
+    }
+
+    segments
+}
+
 /// Encode a single packet (header + body) for one (compno, resno, precno, layno).
 /// Returns the number of bytes written.
 /// (C: opj_t2_encode_packet)
@@ -640,48 +688,19 @@ pub fn t2_encode_packet(
 
                     let cblk = &cblks[cblkno];
 
-                    // --- Length increment ---
-                    // Compute minimum numlenbits increment needed for all segment lengths
+                    // --- Length increment + segment lengths ---
                     let first_pass_in_layer = cblk.numpasses;
                     let last_pass_in_layer = first_pass_in_layer + layer.numpasses;
+                    let segments = collect_encode_segments(
+                        cblk,
+                        first_pass_in_layer,
+                        last_pass_in_layer,
+                        cblksty,
+                    );
+
+                    // Compute minimum numlenbits increment needed
                     let mut increment = 0u32;
-                    let mut seg_start = first_pass_in_layer;
-
-                    while seg_start < last_pass_in_layer {
-                        // Find segment end: at terminating pass or end of layer
-                        let mut seg_end = seg_start + 1;
-                        while seg_end < last_pass_in_layer {
-                            if (cblksty
-                                & (crate::types::J2K_CCP_CBLKSTY_TERMALL
-                                    | crate::types::J2K_CCP_CBLKSTY_LAZY))
-                                != 0
-                            {
-                                let pass_idx = seg_end as usize - 1;
-                                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
-                                    break;
-                                }
-                            }
-                            seg_end += 1;
-                        }
-                        let numpasses_in_seg = seg_end - seg_start;
-
-                        // Compute segment data length
-                        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len()
-                        {
-                            let end_rate = cblk.passes[seg_end as usize - 1].rate;
-                            let start_rate =
-                                if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
-                                    cblk.passes[seg_start as usize - 1].rate
-                                } else {
-                                    0
-                                };
-                            end_rate.saturating_sub(start_rate)
-                        } else {
-                            0
-                        };
-
-                        // Compute bits needed: we need enough bits to represent seg_data_len
-                        // bit_width = numlenbits + floorlog2(numpasses_in_seg)
+                    for &(numpasses_in_seg, seg_data_len) in &segments {
                         let passno_bits = uint_floorlog2(numpasses_in_seg);
                         let available_bits = cblk.numlenbits + passno_bits;
                         let needed_bits = if seg_data_len > 0 {
@@ -690,56 +709,18 @@ pub fn t2_encode_packet(
                             0
                         };
                         if needed_bits > available_bits {
-                            let new_inc = needed_bits - available_bits;
-                            if new_inc > increment {
-                                increment = new_inc;
-                            }
+                            increment = increment.max(needed_bits - available_bits);
                         }
-
-                        seg_start = seg_end;
                     }
 
                     t2_putcommacode(&mut bio, increment)?;
 
-                    // --- Segment lengths ---
+                    // Write segment lengths
                     let cblk = &mut cblks[cblkno];
                     cblk.numlenbits += increment;
-                    let mut seg_start = first_pass_in_layer;
-
-                    while seg_start < last_pass_in_layer {
-                        let mut seg_end = seg_start + 1;
-                        while seg_end < last_pass_in_layer {
-                            if (cblksty
-                                & (crate::types::J2K_CCP_CBLKSTY_TERMALL
-                                    | crate::types::J2K_CCP_CBLKSTY_LAZY))
-                                != 0
-                            {
-                                let pass_idx = seg_end as usize - 1;
-                                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
-                                    break;
-                                }
-                            }
-                            seg_end += 1;
-                        }
-                        let numpasses_in_seg = seg_end - seg_start;
-                        let seg_data_len = if seg_end > 0 && (seg_end as usize) <= cblk.passes.len()
-                        {
-                            let end_rate = cblk.passes[seg_end as usize - 1].rate;
-                            let start_rate =
-                                if seg_start > 0 && (seg_start as usize) <= cblk.passes.len() {
-                                    cblk.passes[seg_start as usize - 1].rate
-                                } else {
-                                    0
-                                };
-                            end_rate.saturating_sub(start_rate)
-                        } else {
-                            0
-                        };
-
+                    for &(numpasses_in_seg, seg_data_len) in &segments {
                         let bit_width = cblk.numlenbits + uint_floorlog2(numpasses_in_seg);
                         bio.write(seg_data_len, bit_width)?;
-
-                        seg_start = seg_end;
                     }
                 }
             }
