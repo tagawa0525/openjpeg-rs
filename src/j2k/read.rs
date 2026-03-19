@@ -331,6 +331,120 @@ impl J2kDecoder {
     pub fn num_tiles(&self) -> u32 {
         self.cp.tw * self.cp.th
     }
+
+    /// Decode all tiles and populate image pixel data.
+    ///
+    /// Must be called after `read_all_tiles()`. For each tile, initializes TCD,
+    /// runs the decode pipeline (T2→T1→DWT→MCT→DC shift), and copies decoded
+    /// pixels into `self.image.comps[*].data`.
+    pub fn decode_tiles(&mut self) -> Result<()> {
+        use crate::tcd::Tcd;
+        use crate::types::int_ceildiv;
+
+        let num_tiles = self.num_tiles();
+
+        // Compute DC level shift from image precision (C: set in opj_j2k_read_siz)
+        for tcp in &mut self.cp.tcps {
+            for (compno, tccp) in tcp.tccps.iter_mut().enumerate() {
+                if let Some(img_comp) = self.image.comps.get(compno)
+                    && !img_comp.sgnd
+                    && img_comp.prec > 0
+                    && img_comp.prec <= 31
+                {
+                    tccp.m_dc_level_shift = 1i32 << (img_comp.prec - 1);
+                }
+            }
+        }
+
+        // Allocate image component data buffers
+        for comp in &mut self.image.comps {
+            let w = (comp.w) as usize;
+            let h = (comp.h) as usize;
+            if comp.data.len() < w * h {
+                comp.data.resize(w * h, 0);
+            }
+        }
+
+        for tileno in 0..num_tiles {
+            let tile_idx = tileno as usize;
+            if tile_idx >= self.tile_data.len() {
+                return Err(Error::InvalidInput(format!(
+                    "missing tile data for tile {tileno}"
+                )));
+            }
+
+            let tcp = self
+                .cp
+                .tcps
+                .get(tile_idx)
+                .ok_or_else(|| Error::InvalidInput(format!("missing TCP for tile {tileno}")))?;
+
+            // Initialize TCD and build tile hierarchy
+            let mut tcd = Tcd::new(true);
+            tcd.init_tile(tileno, &self.image, &self.cp, tcp, false)?;
+
+            // Decode tile: T2→T1→copy→DWT→MCT→DC shift
+            tcd.decode_tile(&mut self.tile_data[tile_idx], &self.image, &self.cp, tcp)?;
+
+            // Copy decoded pixel data from TCD tile to Image components.
+            // Each tile covers a region of the image; place pixels accordingly.
+            let p = tileno % self.cp.tw;
+            let q = tileno / self.cp.tw;
+            let tx0 = (self.cp.tx0 + p * self.cp.tdx).max(self.image.x0);
+            let ty0 = (self.cp.ty0 + q * self.cp.tdy).max(self.image.y0);
+
+            for (compno, tcd_comp) in tcd.tile.comps.iter().enumerate() {
+                let img_comp = match self.image.comps.get(compno) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let dx = img_comp.dx.max(1);
+                let dy = img_comp.dy.max(1);
+
+                // Tile component origin in component coordinates
+                let tc_x0 = int_ceildiv(tx0 as i32, dx as i32);
+                let tc_y0 = int_ceildiv(ty0 as i32, dy as i32);
+
+                // Image component origin
+                let img_x0 = int_ceildiv(self.image.x0 as i32, dx as i32);
+                let img_y0 = int_ceildiv(self.image.y0 as i32, dy as i32);
+                let img_w = img_comp.w as usize;
+
+                let tc_w = (tcd_comp.x1 - tcd_comp.x0).max(0) as usize;
+                let tc_h = (tcd_comp.y1 - tcd_comp.y0).max(0) as usize;
+
+                // Offset of this tile within the image buffer
+                let off_x = (tc_x0 - img_x0) as usize;
+                let off_y = (tc_y0 - img_y0) as usize;
+                let img_h = img_comp.h as usize;
+
+                // Validate tile region fits within image buffer
+                if off_x + tc_w > img_w || off_y + tc_h > img_h {
+                    return Err(Error::InvalidInput(format!(
+                        "tile {tileno} comp {compno}: region ({off_x},{off_y})+({tc_w}x{tc_h}) \
+                         exceeds image ({img_w}x{img_h})"
+                    )));
+                }
+                if tcd_comp.data.len() < tc_w * tc_h {
+                    return Err(Error::InvalidInput(format!(
+                        "tile {tileno} comp {compno}: decoded {} samples, expected {}",
+                        tcd_comp.data.len(),
+                        tc_w * tc_h
+                    )));
+                }
+
+                let img_data = &mut self.image.comps[compno].data;
+                for j in 0..tc_h {
+                    let src_off = j * tc_w;
+                    let dst_off = (off_y + j) * img_w + off_x;
+                    img_data[dst_off..dst_off + tc_w]
+                        .copy_from_slice(&tcd_comp.data[src_off..src_off + tc_w]);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +565,26 @@ mod tests {
 
         assert_eq!(dec.tile_data.len(), 1);
         assert!(matches!(dec.state, J2kState::Eoc));
+    }
+
+    // --- decode_tiles ---
+
+    #[test]
+    fn decode_tiles_produces_pixel_data() {
+        // After decode_tiles(), image.comps[0].data should be non-empty
+        // and contain the DC-shifted value for a 1x1 grayscale image.
+        let data = build_minimal_j2k();
+        let mut stream = MemoryStream::new_input(data);
+        let mut dec = J2kDecoder::new();
+        dec.read_header(&mut stream).unwrap();
+        dec.read_all_tiles(&mut stream).unwrap();
+        dec.decode_tiles().unwrap();
+
+        // 1x1 image, 1 component → exactly 1 pixel
+        assert_eq!(dec.image.comps.len(), 1);
+        assert_eq!(dec.image.comps[0].data.len(), 1);
+        // With empty codeblock data (zero coefficients) + DC shift (2^(prec-1) = 128):
+        assert_eq!(dec.image.comps[0].data[0], 128);
     }
 
     #[test]

@@ -138,6 +138,7 @@ impl Jp2Decoder {
         self.apply_colour();
 
         self.j2k.read_all_tiles(stream)?;
+        self.j2k.decode_tiles()?;
 
         // Post-decode: apply palette and channel definitions
         self.apply_pclr();
