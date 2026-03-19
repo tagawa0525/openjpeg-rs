@@ -1,4 +1,7 @@
 // Multi-component transform (C: mct.c)
+//
+// When the `parallel` feature is enabled, standard MCT functions use
+// recursive `rayon::join` + `split_at_mut` for parallel sample processing.
 
 use crate::error::{Error, Result};
 use crate::types::int_fix_mul;
@@ -9,12 +12,21 @@ pub static MCT_NORMS: [f64; 3] = [1.732, 0.8292, 0.8292];
 /// ICT normalization coefficients (C: opj_mct_norms_real).
 pub static MCT_NORMS_REAL: [f64; 3] = [1.732, 1.805, 1.573];
 
+/// Parallel MCT threshold: minimum sample count before using rayon.
+#[cfg(feature = "parallel")]
+const MCT_PAR_THRESHOLD: usize = 4096;
+
 /// Forward reversible MCT (RCT) (C: opj_mct_encode).
 /// Y = (R + 2G + B) >> 2, Cb = B - G, Cr = R - G
 pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
+    #[cfg(feature = "parallel")]
+    if n > MCT_PAR_THRESHOLD {
+        mct_par_i32(c0, c1, c2, mct_encode_kernel_i32);
+        return;
+    }
     for i in 0..n {
         let r = c0[i];
         let g = c1[i];
@@ -31,6 +43,11 @@ pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
+    #[cfg(feature = "parallel")]
+    if n > MCT_PAR_THRESHOLD {
+        mct_par_i32(c0, c1, c2, mct_decode_kernel_i32);
+        return;
+    }
     for i in 0..n {
         let y = c0[i];
         let u = c1[i];
@@ -47,6 +64,11 @@ pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
+    #[cfg(feature = "parallel")]
+    if n > MCT_PAR_THRESHOLD {
+        mct_par_f32(c0, c1, c2, mct_encode_real_kernel);
+        return;
+    }
     for i in 0..n {
         let r = c0[i];
         let g = c1[i];
@@ -62,6 +84,11 @@ pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
     let n = c0.len().min(c1.len()).min(c2.len());
+    #[cfg(feature = "parallel")]
+    if n > MCT_PAR_THRESHOLD {
+        mct_par_f32(c0, c1, c2, mct_decode_real_kernel);
+        return;
+    }
     for i in 0..n {
         let y = c0[i];
         let u = c1[i];
@@ -147,6 +174,120 @@ pub fn mct_decode_custom(matrix: &[f32], data: &mut [&mut [f32]], n: usize) -> R
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Parallel MCT dispatch (rayon::join + split_at_mut)
+// ---------------------------------------------------------------------------
+
+/// Sequential kernel for forward RCT.
+#[cfg(feature = "parallel")]
+fn mct_encode_kernel_i32(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    for i in 0..c0.len() {
+        let r = c0[i];
+        let g = c1[i];
+        let b = c2[i];
+        c0[i] = (r + (g * 2) + b) >> 2;
+        c1[i] = b - g;
+        c2[i] = r - g;
+    }
+}
+
+/// Sequential kernel for inverse RCT.
+#[cfg(feature = "parallel")]
+fn mct_decode_kernel_i32(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
+    for i in 0..c0.len() {
+        let y = c0[i];
+        let u = c1[i];
+        let v = c2[i];
+        let g = y - ((u + v) >> 2);
+        c0[i] = v + g;
+        c1[i] = g;
+        c2[i] = u + g;
+    }
+}
+
+/// Sequential kernel for forward ICT.
+#[cfg(feature = "parallel")]
+fn mct_encode_real_kernel(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    for i in 0..c0.len() {
+        let r = c0[i];
+        let g = c1[i];
+        let b = c2[i];
+        c0[i] = 0.299f32 * r + 0.587f32 * g + 0.114f32 * b;
+        c1[i] = -0.16875f32 * r - 0.331260f32 * g + 0.5f32 * b;
+        c2[i] = 0.5f32 * r - 0.41869f32 * g - 0.08131f32 * b;
+    }
+}
+
+/// Sequential kernel for inverse ICT.
+#[cfg(feature = "parallel")]
+fn mct_decode_real_kernel(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
+    for i in 0..c0.len() {
+        let y = c0[i];
+        let u = c1[i];
+        let v = c2[i];
+        c0[i] = y + v * 1.402f32;
+        c1[i] = y - u * 0.34413f32 - v * 0.71414f32;
+        c2[i] = y + u * 1.772f32;
+    }
+}
+
+/// Recursive parallel MCT dispatch for i32 slices.
+///
+/// Truncates all three slices to the minimum length before processing,
+/// so unequal-length slices never cause out-of-bounds access.
+#[cfg(feature = "parallel")]
+fn mct_par_i32(
+    c0: &mut [i32],
+    c1: &mut [i32],
+    c2: &mut [i32],
+    kernel: fn(&mut [i32], &mut [i32], &mut [i32]),
+) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    let c0 = &mut c0[..n];
+    let c1 = &mut c1[..n];
+    let c2 = &mut c2[..n];
+    if n <= MCT_PAR_THRESHOLD {
+        kernel(c0, c1, c2);
+        return;
+    }
+    let mid = n / 2;
+    let (c0a, c0b) = c0.split_at_mut(mid);
+    let (c1a, c1b) = c1.split_at_mut(mid);
+    let (c2a, c2b) = c2.split_at_mut(mid);
+    rayon::join(
+        || mct_par_i32(c0a, c1a, c2a, kernel),
+        || mct_par_i32(c0b, c1b, c2b, kernel),
+    );
+}
+
+/// Recursive parallel MCT dispatch for f32 slices.
+///
+/// Truncates all three slices to the minimum length before processing.
+#[cfg(feature = "parallel")]
+fn mct_par_f32(
+    c0: &mut [f32],
+    c1: &mut [f32],
+    c2: &mut [f32],
+    kernel: fn(&mut [f32], &mut [f32], &mut [f32]),
+) {
+    let n = c0.len().min(c1.len()).min(c2.len());
+    let c0 = &mut c0[..n];
+    let c1 = &mut c1[..n];
+    let c2 = &mut c2[..n];
+    if n <= MCT_PAR_THRESHOLD {
+        kernel(c0, c1, c2);
+        return;
+    }
+    let mid = n / 2;
+    let (c0a, c0b) = c0.split_at_mut(mid);
+    let (c1a, c1b) = c1.split_at_mut(mid);
+    let (c2a, c2b) = c2.split_at_mut(mid);
+    rayon::join(
+        || mct_par_f32(c0a, c1a, c2a, kernel),
+        || mct_par_f32(c0b, c1b, c2b, kernel),
+    );
 }
 
 /// Calculate column L2 norms of a matrix (C: opj_calculate_norms).
@@ -285,6 +426,57 @@ mod tests {
         calculate_norms(&mut norms, &matrix, 3);
         for n in &norms {
             assert!((*n - 1.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn rct_roundtrip_large() {
+        // Test with >4096 samples to exercise parallel path when enabled.
+        let n = 8192;
+        let mut c0: Vec<i32> = (0..n).map(|i| (i * 3 + 7) % 256).collect();
+        let mut c1: Vec<i32> = (0..n).map(|i| (i * 5 + 13) % 256).collect();
+        let mut c2: Vec<i32> = (0..n).map(|i| (i * 7 + 23) % 256).collect();
+        let orig0 = c0.clone();
+        let orig1 = c1.clone();
+        let orig2 = c2.clone();
+        mct_encode(&mut c0, &mut c1, &mut c2);
+        mct_decode(&mut c0, &mut c1, &mut c2);
+        assert_eq!(c0, orig0);
+        assert_eq!(c1, orig1);
+        assert_eq!(c2, orig2);
+    }
+
+    #[test]
+    fn ict_roundtrip_large() {
+        // Test with >4096 samples to exercise parallel path when enabled.
+        let n = 8192;
+        let mut c0: Vec<f32> = (0..n).map(|i| ((i * 3 + 7) % 256) as f32).collect();
+        let mut c1: Vec<f32> = (0..n).map(|i| ((i * 5 + 13) % 256) as f32).collect();
+        let mut c2: Vec<f32> = (0..n).map(|i| ((i * 7 + 23) % 256) as f32).collect();
+        let orig0 = c0.clone();
+        let orig1 = c1.clone();
+        let orig2 = c2.clone();
+        mct_encode_real(&mut c0, &mut c1, &mut c2);
+        mct_decode_real(&mut c0, &mut c1, &mut c2);
+        for i in 0..n as usize {
+            assert!(
+                (c0[i] - orig0[i]).abs() < 0.02,
+                "c0[{i}]: {} vs {}",
+                c0[i],
+                orig0[i]
+            );
+            assert!(
+                (c1[i] - orig1[i]).abs() < 0.02,
+                "c1[{i}]: {} vs {}",
+                c1[i],
+                orig1[i]
+            );
+            assert!(
+                (c2[i] - orig2[i]).abs() < 0.02,
+                "c2[{i}]: {} vs {}",
+                c2[i],
+                orig2[i]
+            );
         }
     }
 }

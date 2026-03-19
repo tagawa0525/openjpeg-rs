@@ -1,7 +1,28 @@
 // Discrete Wavelet Transform (C: dwt.c)
-// Scalar-only implementation (no SIMD, no thread pool).
+// Scalar-only implementation (no SIMD). Horizontal passes are parallelized
+// via rayon when the `parallel` feature is enabled.
 
 use crate::error::Result;
+
+#[cfg(feature = "parallel")]
+use rayon::iter::{ParallelBridge, ParallelIterator};
+
+/// Per-thread scratch buffers for parallel DWT horizontal passes.
+#[cfg(feature = "parallel")]
+struct DwtScratch<T> {
+    t: Vec<T>,
+    s: Vec<T>,
+}
+
+#[cfg(feature = "parallel")]
+impl<T: Default + Clone> DwtScratch<T> {
+    fn ensure(&mut self, len: usize) {
+        if self.t.len() < len {
+            self.t.resize(len, T::default());
+            self.s.resize(len, T::default());
+        }
+    }
+}
 
 /// 5-3 normalization table (C: opj_dwt_norms). Indexed by [orient][level].
 #[rustfmt::skip]
@@ -384,12 +405,31 @@ pub fn dwt_encode_2d_53(
         let dn_h = rw - rw1;
 
         // Horizontal pass
-        for i in 0..rh {
-            let row_start = i * stride;
-            tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
-            dwt_encode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
-            deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
-            data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
+        #[cfg(feature = "parallel")]
+        {
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<i32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    scratch.t[..rw].copy_from_slice(&row[..rw]);
+                    dwt_encode_1_53(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    deinterleave_h(&scratch.t[..rw], &mut scratch.s[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.s[..rw]);
+                },
+            );
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for i in 0..rh {
+                let row_start = i * stride;
+                tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
+                dwt_encode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
+                deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
+                data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
+            }
         }
     }
     Ok(())
@@ -419,23 +459,41 @@ pub fn dwt_decode_2d_53(
         let dn_h = rw - rw1;
 
         // Horizontal pass
-        for i in 0..rh {
-            let row_start = i * stride;
-            interleave_h(
-                &data[row_start..row_start + rw],
-                &mut tmp[..rw],
-                sn_h,
-                dn_h,
-                false,
+        #[cfg(feature = "parallel")]
+        {
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<i32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    interleave_h(&row[..rw], &mut scratch.t[..rw], sn_h, dn_h, false);
+                    dwt_decode_1_53(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.t[..rw]);
+                },
             );
-            dwt_decode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
-            data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for i in 0..rh {
+                let row_start = i * stride;
+                interleave_h(
+                    &data[row_start..row_start + rw],
+                    &mut tmp[..rw],
+                    sn_h,
+                    dn_h,
+                    false,
+                );
+                dwt_decode_1_53(&mut tmp[..rw], sn_h, dn_h, false);
+                data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+            }
         }
 
         let sn_v = rh1;
         let dn_v = rh - rh1;
 
-        // Vertical pass
+        // Vertical pass (always sequential — column access requires stride)
         for j in 0..rw {
             for i in 0..rh {
                 separated[i] = data[i * stride + j];
@@ -488,12 +546,31 @@ pub fn dwt_encode_2d_97(
         let dn_h = rw - rw1;
 
         // Horizontal pass
-        for i in 0..rh {
-            let row_start = i * stride;
-            tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
-            dwt_encode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
-            deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
-            data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
+        #[cfg(feature = "parallel")]
+        {
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<f32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    scratch.t[..rw].copy_from_slice(&row[..rw]);
+                    dwt_encode_1_97(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    deinterleave_h(&scratch.t[..rw], &mut scratch.s[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.s[..rw]);
+                },
+            );
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for i in 0..rh {
+                let row_start = i * stride;
+                tmp[..rw].copy_from_slice(&data[row_start..row_start + rw]);
+                dwt_encode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
+                deinterleave_h(&tmp[..rw], &mut separated[..rw], sn_h, dn_h, false);
+                data[row_start..row_start + rw].copy_from_slice(&separated[..rw]);
+            }
         }
     }
     Ok(())
@@ -523,17 +600,35 @@ pub fn dwt_decode_2d_97(
         let dn_h = rw - rw1;
 
         // Horizontal pass
-        for i in 0..rh {
-            let row_start = i * stride;
-            interleave_h(
-                &data[row_start..row_start + rw],
-                &mut tmp[..rw],
-                sn_h,
-                dn_h,
-                false,
+        #[cfg(feature = "parallel")]
+        {
+            data.chunks_mut(stride).take(rh).par_bridge().for_each_init(
+                || DwtScratch::<f32> {
+                    t: Vec::new(),
+                    s: Vec::new(),
+                },
+                |scratch, row| {
+                    scratch.ensure(rw);
+                    interleave_h(&row[..rw], &mut scratch.t[..rw], sn_h, dn_h, false);
+                    dwt_decode_1_97(&mut scratch.t[..rw], sn_h, dn_h, false);
+                    row[..rw].copy_from_slice(&scratch.t[..rw]);
+                },
             );
-            dwt_decode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
-            data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for i in 0..rh {
+                let row_start = i * stride;
+                interleave_h(
+                    &data[row_start..row_start + rw],
+                    &mut tmp[..rw],
+                    sn_h,
+                    dn_h,
+                    false,
+                );
+                dwt_decode_1_97(&mut tmp[..rw], sn_h, dn_h, false);
+                data[row_start..row_start + rw].copy_from_slice(&tmp[..rw]);
+            }
         }
 
         let sn_v = rh1;
@@ -895,6 +990,34 @@ mod tests {
         let mut data = original.clone();
         dwt_encode_2d_97(&mut data, 5, 3, 5, 2).unwrap();
         dwt_decode_2d_97(&mut data, 5, 3, 5, 2).unwrap();
+        assert_f32_eq(&data, &original, 1e-3);
+    }
+
+    // ==================== Large data tests (exercise parallel paths) ====================
+
+    #[test]
+    fn encode_2d_53_64x64_roundtrip() {
+        let w = 64;
+        let h = 64;
+        let mut original = vec![0i32; w * h];
+        for (i, v) in original.iter_mut().enumerate() {
+            *v = (i as i32 * 13 + 7) % 256;
+        }
+        let mut data = original.clone();
+        dwt_encode_2d_53(&mut data, w, h, w, 4).unwrap();
+        assert_ne!(data, original);
+        dwt_decode_2d_53(&mut data, w, h, w, 4).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn encode_2d_97_64x64_roundtrip() {
+        let w = 64;
+        let h = 64;
+        let original: Vec<f32> = (0..w * h).map(|i| ((i * 13 + 7) % 256) as f32).collect();
+        let mut data = original.clone();
+        dwt_encode_2d_97(&mut data, w, h, w, 4).unwrap();
+        dwt_decode_2d_97(&mut data, w, h, w, 4).unwrap();
         assert_f32_eq(&data, &original, 1e-3);
     }
 }

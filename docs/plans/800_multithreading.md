@@ -1,6 +1,6 @@
 # Phase 800: マルチスレッド（rayon feature flag）
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## Context
 
