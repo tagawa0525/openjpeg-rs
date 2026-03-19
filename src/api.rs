@@ -289,13 +289,20 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-
     fn decode_j2k_basic() {
         let j2k = build_minimal_j2k(8, 8, 1);
         let image = decode(&j2k, CodecFormat::J2k).unwrap();
         assert_eq!(image.x1, 8);
         assert_eq!(image.y1, 8);
         assert_eq!(image.comps.len(), 1);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn decode_j2k_produces_pixels() {
+        let j2k = build_minimal_j2k(8, 8, 1);
+        let image = decode(&j2k, CodecFormat::J2k).unwrap();
+        assert_eq!(image.comps[0].data.len(), 64); // 8*8 pixels
     }
 
     #[test]

@@ -331,6 +331,15 @@ impl J2kDecoder {
     pub fn num_tiles(&self) -> u32 {
         self.cp.tw * self.cp.th
     }
+
+    /// Decode all tiles and populate image pixel data.
+    ///
+    /// Must be called after `read_all_tiles()`. For each tile, initializes TCD,
+    /// runs the decode pipeline (T2→T1→DWT→MCT→DC shift), and copies decoded
+    /// pixels into `self.image.comps[*].data`.
+    pub fn decode_tiles(&mut self) -> Result<()> {
+        todo!("Phase 1100c: decode_tiles")
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +460,27 @@ mod tests {
 
         assert_eq!(dec.tile_data.len(), 1);
         assert!(matches!(dec.state, J2kState::Eoc));
+    }
+
+    // --- decode_tiles ---
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn decode_tiles_produces_pixel_data() {
+        // After decode_tiles(), image.comps[0].data should be non-empty
+        // and contain the DC-shifted value for a 1x1 grayscale image.
+        let data = build_minimal_j2k();
+        let mut stream = MemoryStream::new_input(data);
+        let mut dec = J2kDecoder::new();
+        dec.read_header(&mut stream).unwrap();
+        dec.read_all_tiles(&mut stream).unwrap();
+        dec.decode_tiles().unwrap();
+
+        // 1x1 image, 1 component → exactly 1 pixel
+        assert_eq!(dec.image.comps.len(), 1);
+        assert_eq!(dec.image.comps[0].data.len(), 1);
+        // With empty codeblock data (zero coefficients) + DC shift (2^(prec-1) = 128):
+        assert_eq!(dec.image.comps[0].data[0], 128);
     }
 
     #[test]
