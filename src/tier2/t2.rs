@@ -664,18 +664,19 @@ pub fn t2_encode_packet(
 
                     // --- Inclusion ---
                     if cblk.numpasses == 0 {
-                        // First inclusion: use tag tree
-                        if let Some(ref mut incltree) = prec.incltree {
-                            incltree.set_value(
-                                cblkno as u32,
-                                if layer.numpasses > 0 {
-                                    layno as i32
-                                } else {
-                                    (layno + 1) as i32
-                                },
-                            );
-                            incltree.encode(&mut bio, cblkno as u32, (layno + 1) as i32)?;
-                        }
+                        // First inclusion: use tag tree (mandatory)
+                        let incltree = prec.incltree.as_mut().ok_or_else(|| {
+                            Error::InvalidInput("missing inclusion tag tree".into())
+                        })?;
+                        incltree.set_value(
+                            cblkno as u32,
+                            if layer.numpasses > 0 {
+                                layno as i32
+                            } else {
+                                (layno + 1) as i32
+                            },
+                        );
+                        incltree.encode(&mut bio, cblkno as u32, (layno + 1) as i32)?;
                     } else {
                         // Already included: write 1 bit
                         bio.write(if layer.numpasses > 0 { 1 } else { 0 }, 1)?;
@@ -685,10 +686,12 @@ pub fn t2_encode_packet(
                         continue;
                     }
 
-                    // --- IMSB (first inclusion only) ---
-                    if cblk.numpasses == 0
-                        && let Some(ref mut imsbtree) = prec.imsbtree
-                    {
+                    // --- IMSB (first inclusion only, mandatory) ---
+                    if cblk.numpasses == 0 {
+                        let imsbtree = prec
+                            .imsbtree
+                            .as_mut()
+                            .ok_or_else(|| Error::InvalidInput("missing IMSB tag tree".into()))?;
                         imsbtree.encode(&mut bio, cblkno as u32, 999)?;
                     }
 
