@@ -587,20 +587,216 @@ impl Tcd {
     /// After T1 decode, each codeblock has decoded coefficients in `decoded_data`.
     /// This function places them at the correct subband positions in the tile
     /// component's data buffer, applying dequantization.
-    pub fn copy_decoded_cblks_to_data(&mut self, _tcp: &TileCodingParameters) -> Result<()> {
-        todo!("Phase 1100b: copy_decoded_cblks_to_data")
+    pub fn copy_decoded_cblks_to_data(&mut self, tcp: &TileCodingParameters) -> Result<()> {
+        // Collect copy operations to avoid borrow conflicts.
+        struct CopyOp {
+            compno: usize,
+            buf_x: usize,
+            buf_y: usize,
+            cblk_w: usize,
+            cblk_h: usize,
+            data: Vec<i32>,
+            qmfbid: u32,
+            stepsize: f32,
+        }
+
+        let mut ops = Vec::new();
+        for compno in 0..self.tile.comps.len() {
+            let comp = &self.tile.comps[compno];
+            let qmfbid = tcp.tccps.get(compno).map(|t| t.qmfbid).unwrap_or(1);
+
+            for resno in 0..comp.numresolutions as usize {
+                let res = &comp.resolutions[resno];
+                for bandno in 0..res.numbands as usize {
+                    let band = &res.bands[bandno];
+                    if band.is_empty() {
+                        continue;
+                    }
+
+                    // Subband offset: C: if (band->bandno & 1) x += pres->x1 - pres->x0
+                    let (x_off, y_off) = if resno > 0 {
+                        let pres = &comp.resolutions[resno - 1];
+                        (
+                            if band.bandno & 1 != 0 {
+                                (pres.x1 - pres.x0) as usize
+                            } else {
+                                0
+                            },
+                            if band.bandno & 2 != 0 {
+                                (pres.y1 - pres.y0) as usize
+                            } else {
+                                0
+                            },
+                        )
+                    } else {
+                        (0, 0)
+                    };
+
+                    for prec in &band.precincts {
+                        let cblks = match &prec.cblks {
+                            TcdCodeBlocks::Dec(c) => c,
+                            _ => continue,
+                        };
+                        for cblk in cblks {
+                            let decoded = match &cblk.decoded_data {
+                                Some(d) => d,
+                                None => continue,
+                            };
+                            let cblk_w = (cblk.x1 - cblk.x0).max(0) as usize;
+                            let cblk_h = (cblk.y1 - cblk.y0).max(0) as usize;
+                            if cblk_w == 0 || cblk_h == 0 {
+                                continue;
+                            }
+                            let buf_x = (cblk.x0 - band.x0) as usize + x_off;
+                            let buf_y = (cblk.y0 - band.y0) as usize + y_off;
+                            ops.push(CopyOp {
+                                compno,
+                                buf_x,
+                                buf_y,
+                                cblk_w,
+                                cblk_h,
+                                data: decoded.clone(),
+                                qmfbid,
+                                stepsize: band.stepsize,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply copy operations
+        for op in &ops {
+            let comp = &mut self.tile.comps[op.compno];
+            let comp_w = (comp.x1 - comp.x0) as usize;
+            for j in 0..op.cblk_h {
+                let src_off = j * op.cblk_w;
+                let dst_off = (op.buf_y + j) * comp_w + op.buf_x;
+                for i in 0..op.cblk_w {
+                    if src_off + i < op.data.len() && dst_off + i < comp.data.len() {
+                        let val = op.data[src_off + i];
+                        comp.data[dst_off + i] = if op.qmfbid == 1 {
+                            val / 2
+                        } else {
+                            (val as f32 * 0.5 * op.stepsize) as i32
+                        };
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Decode a tile: T2 → T1 → copy cblks → DWT → MCT → DC shift.
     /// (C: opj_tcd_decode_tile)
     pub fn decode_tile(
         &mut self,
-        _tile_data: &mut [u8],
-        _image: &Image,
-        _cp: &CodingParameters,
-        _tcp: &TileCodingParameters,
+        tile_data: &mut [u8],
+        image: &Image,
+        cp: &CodingParameters,
+        tcp: &TileCodingParameters,
     ) -> Result<()> {
-        todo!("Phase 1100b: decode_tile")
+        use crate::coding::t1::t1_decode_cblks;
+        use crate::tier2::pi::pi_create_decode;
+        use crate::tier2::t2::t2_decode_packets;
+        use crate::transform::dwt;
+        use crate::transform::mct;
+
+        // 1. Allocate tile component data buffers
+        for comp in &mut self.tile.comps {
+            let w = (comp.x1 - comp.x0) as usize;
+            let h = (comp.y1 - comp.y0) as usize;
+            if comp.data.len() < w * h {
+                comp.data.resize(w * h, 0);
+            }
+        }
+
+        // 2. T2: Depacketize — extract codeblock segment data from packets
+        let max_layers = if tcp.num_layers_to_decode > 0 {
+            tcp.num_layers_to_decode
+        } else {
+            tcp.numlayers.max(1)
+        };
+        let mut pis = pi_create_decode(image, cp, self.tcd_tileno)?;
+        t2_decode_packets(&mut self.tile, tcp, &mut pis, tile_data, max_layers)?;
+
+        // 3. T1: Arithmetic decode — reconstruct coefficients from codeblocks
+        t1_decode_cblks(&mut self.tile, tcp)?;
+
+        // 4. Copy decoded cblk coefficients to tile component data buffers
+        self.copy_decoded_cblks_to_data(tcp)?;
+
+        // 5. Inverse DWT for each component
+        for compno in 0..self.tile.comps.len() {
+            let num_res = self.tile.comps[compno].numresolutions as usize;
+            if num_res <= 1 {
+                continue; // No DWT for single resolution
+            }
+            let w = (self.tile.comps[compno].x1 - self.tile.comps[compno].x0) as usize;
+            let h = (self.tile.comps[compno].y1 - self.tile.comps[compno].y0) as usize;
+            let qmfbid = tcp.tccps.get(compno).map(|t| t.qmfbid).unwrap_or(1);
+
+            if qmfbid == 1 {
+                dwt::dwt_decode_2d_53(&mut self.tile.comps[compno].data, w, h, w, num_res)?;
+            } else {
+                let comp_data = &mut self.tile.comps[compno].data;
+                let mut f32_data: Vec<f32> = comp_data.iter().map(|&v| v as f32).collect();
+                dwt::dwt_decode_2d_97(&mut f32_data, w, h, w, num_res)?;
+                for (dst, &src) in comp_data.iter_mut().zip(f32_data.iter()) {
+                    *dst = src.round() as i32;
+                }
+            }
+        }
+
+        // 6. Inverse MCT (if applicable, >= 3 components)
+        if tcp.mct != 0 && self.tile.comps.len() >= 3 {
+            let samples = {
+                let comp = &self.tile.comps[0];
+                ((comp.x1 - comp.x0) * (comp.y1 - comp.y0)) as usize
+            };
+            let qmfbid = tcp.tccps.first().map(|t| t.qmfbid).unwrap_or(1);
+
+            if tcp.mct == 1 {
+                let (c0_rest, rest) = self.tile.comps.split_at_mut(1);
+                let (c1_rest, c2_rest) = rest.split_at_mut(1);
+                if qmfbid == 1 {
+                    mct::mct_decode(
+                        &mut c0_rest[0].data[..samples],
+                        &mut c1_rest[0].data[..samples],
+                        &mut c2_rest[0].data[..samples],
+                    );
+                } else {
+                    let mut f0: Vec<f32> = c0_rest[0].data[..samples]
+                        .iter()
+                        .map(|&v| v as f32)
+                        .collect();
+                    let mut f1: Vec<f32> = c1_rest[0].data[..samples]
+                        .iter()
+                        .map(|&v| v as f32)
+                        .collect();
+                    let mut f2: Vec<f32> = c2_rest[0].data[..samples]
+                        .iter()
+                        .map(|&v| v as f32)
+                        .collect();
+                    mct::mct_decode_real(&mut f0, &mut f1, &mut f2);
+                    for (d, &s) in c0_rest[0].data[..samples].iter_mut().zip(f0.iter()) {
+                        *d = s.round() as i32;
+                    }
+                    for (d, &s) in c1_rest[0].data[..samples].iter_mut().zip(f1.iter()) {
+                        *d = s.round() as i32;
+                    }
+                    for (d, &s) in c2_rest[0].data[..samples].iter_mut().zip(f2.iter()) {
+                        *d = s.round() as i32;
+                    }
+                }
+            }
+            // mct == 2 (custom matrix) deferred
+        }
+
+        // 7. DC level shift
+        self.dc_level_shift_decode(tcp);
+
+        Ok(())
     }
 
     /// Apply DC level shift for decoding (C: opj_tcd_dc_level_shift_decode).
@@ -1101,7 +1297,6 @@ mod tests {
     // --- copy_decoded_cblks_to_data ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn copy_decoded_cblks_single_res() {
         // 1 component, 1 resolution (LL only), 4×4 tile, 1 codeblock
         // Set decoded_data with known coefficients and verify buffer placement.
@@ -1154,7 +1349,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn copy_decoded_cblks_two_res_subband_offsets() {
         // 1 component, 2 resolutions, verify HL/LH/HH are at correct buffer offsets.
         let (image, cp, tcp) = create_test_setup(false);
@@ -1196,23 +1390,22 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): x offset = res0_w, y offset = 0
-        let hl_val = tcd.tile.comps[0].data[0 * comp_w + res0_w];
-        assert_eq!(hl_val, 100, "HL should be at x=res0_w");
+        // HL (bandno=1): raw = (1+1)*200=400, ÷2 = 200. x offset = res0_w
+        let hl_val = tcd.tile.comps[0].data[res0_w];
+        assert_eq!(hl_val, 200, "HL should be at x=res0_w");
 
-        // LH (bandno=2): x offset = 0, y offset = res0_h
-        let lh_val = tcd.tile.comps[0].data[res0_h * comp_w + 0];
-        assert_eq!(lh_val, 150, "LH should be at y=res0_h");
+        // LH (bandno=2): raw = (2+1)*200=600, ÷2 = 300. y offset = res0_h
+        let lh_val = tcd.tile.comps[0].data[res0_h * comp_w];
+        assert_eq!(lh_val, 300, "LH should be at y=res0_h");
 
-        // HH (bandno=3): x offset = res0_w, y offset = res0_h
+        // HH (bandno=3): raw = (3+1)*200=800, ÷2 = 400. offset = (res0_w, res0_h)
         let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
-        assert_eq!(hh_val, 200, "HH should be at (res0_w, res0_h)");
+        assert_eq!(hh_val, 400, "HH should be at (res0_w, res0_h)");
     }
 
     // --- decode_tile pipeline ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn decode_tile_single_res_dc_shift() {
         // Minimal pipeline: 1 component, 1 resolution, no DWT, no MCT.
         // Codeblock has all-zero decoded data.

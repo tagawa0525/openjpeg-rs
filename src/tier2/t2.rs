@@ -431,13 +431,52 @@ pub fn t2_read_packet_data(
 ///
 /// Iterates through packets using PacketIterators and decodes each one.
 pub fn t2_decode_packets(
-    _tile: &mut TcdTile,
-    _tcp: &crate::j2k::params::TileCodingParameters,
-    _pis: &mut crate::tier2::pi::PacketIterators,
-    _data: &mut [u8],
-    _max_layers: u32,
+    tile: &mut TcdTile,
+    tcp: &crate::j2k::params::TileCodingParameters,
+    pis: &mut crate::tier2::pi::PacketIterators,
+    data: &mut [u8],
+    max_layers: u32,
 ) -> Result<usize> {
-    todo!("Phase 1100b: t2_decode_packets")
+    let mut total_read = 0usize;
+
+    for pino in 0..pis.len() {
+        while pis.next(pino) {
+            let pi = pis.get(pino);
+            let layno = pi.layno;
+            let compno = pi.compno;
+            let resno = pi.resno;
+            let precno = pi.precno;
+
+            // Skip layers beyond the decode limit
+            if layno >= max_layers {
+                continue;
+            }
+
+            // Get cblksty from TCCP
+            let cblksty = tcp
+                .tccps
+                .get(compno as usize)
+                .map(|tccp| tccp.cblksty)
+                .unwrap_or(0);
+
+            if total_read >= data.len() {
+                break;
+            }
+
+            let bytes = t2_decode_packet(
+                tile,
+                compno,
+                resno,
+                precno,
+                layno,
+                cblksty,
+                &mut data[total_read..],
+            )?;
+            total_read += bytes;
+        }
+    }
+
+    Ok(total_read)
 }
 
 pub fn t2_decode_packet(
@@ -653,10 +692,9 @@ mod tests {
     // --- t2_decode_packets ---
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn t2_decode_packets_single_layer() {
-        use crate::tier2::pi::{PacketIterators, PiComp, PiIterator, PiResolution};
         use crate::j2k::params::Poc;
+        use crate::tier2::pi::{PacketIterators, PiComp, PiIterator, PiResolution};
         use crate::types::ProgressionOrder;
 
         let band_numbps = 8;
