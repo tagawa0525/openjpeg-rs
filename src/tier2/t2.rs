@@ -793,7 +793,7 @@ pub fn t2_encode_packet(
                     )));
                 }
                 if offset + layer.len as usize > dest.len() {
-                    return Err(Error::EndOfStream);
+                    return Err(Error::BufferTooSmall);
                 }
                 dest[offset..offset + layer.len as usize]
                     .copy_from_slice(&cblk.data[data_start..data_end]);
@@ -839,7 +839,7 @@ pub fn t2_encode_packets(
                 .cblksty;
 
             if total_written >= dest.len() {
-                return Err(Error::EndOfStream);
+                return Err(Error::BufferTooSmall);
             }
 
             let bytes = t2_encode_packet(
