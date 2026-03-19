@@ -1,6 +1,6 @@
 # Phase 1000: CLIツール
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## Context
 
