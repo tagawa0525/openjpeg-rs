@@ -390,14 +390,41 @@ pub fn dwt_encode_2d_53(
         let dn_v = rh - rh1;
 
         // Vertical pass
-        for j in 0..rw {
-            for i in 0..rh {
-                tmp[i] = data[i * stride + j];
+        {
+            let mut j = 0;
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    while j + 8 <= rw {
+                        unsafe {
+                            super::dwt_simd::dwt_encode_vert_53_avx2(
+                                data, stride, rh, sn_v, dn_v, j,
+                            );
+                        }
+                        j += 8;
+                    }
+                }
+                if is_x86_feature_detected!("sse2") {
+                    while j + 4 <= rw {
+                        unsafe {
+                            super::dwt_simd::dwt_encode_vert_53_sse2(
+                                data, stride, rh, sn_v, dn_v, j,
+                            );
+                        }
+                        j += 4;
+                    }
+                }
             }
-            dwt_encode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
-            deinterleave_h(&tmp[..rh], &mut separated[..rh], sn_v, dn_v, false);
-            for i in 0..rh {
-                data[i * stride + j] = separated[i];
+            // Scalar remainder
+            for col in j..rw {
+                for i in 0..rh {
+                    tmp[i] = data[i * stride + col];
+                }
+                dwt_encode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
+                deinterleave_h(&tmp[..rh], &mut separated[..rh], sn_v, dn_v, false);
+                for i in 0..rh {
+                    data[i * stride + col] = separated[i];
+                }
             }
         }
 
@@ -493,15 +520,41 @@ pub fn dwt_decode_2d_53(
         let sn_v = rh1;
         let dn_v = rh - rh1;
 
-        // Vertical pass (always sequential — column access requires stride)
-        for j in 0..rw {
-            for i in 0..rh {
-                separated[i] = data[i * stride + j];
+        // Vertical pass
+        {
+            let mut j = 0;
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    while j + 8 <= rw {
+                        unsafe {
+                            super::dwt_simd::dwt_decode_vert_53_avx2(
+                                data, stride, rh, sn_v, dn_v, j,
+                            );
+                        }
+                        j += 8;
+                    }
+                }
+                if is_x86_feature_detected!("sse2") {
+                    while j + 4 <= rw {
+                        unsafe {
+                            super::dwt_simd::dwt_decode_vert_53_sse2(
+                                data, stride, rh, sn_v, dn_v, j,
+                            );
+                        }
+                        j += 4;
+                    }
+                }
             }
-            interleave_h(&separated[..rh], &mut tmp[..rh], sn_v, dn_v, false);
-            dwt_decode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
-            for i in 0..rh {
-                data[i * stride + j] = tmp[i];
+            for col in j..rw {
+                for i in 0..rh {
+                    separated[i] = data[i * stride + col];
+                }
+                interleave_h(&separated[..rh], &mut tmp[..rh], sn_v, dn_v, false);
+                dwt_decode_1_53(&mut tmp[..rh], sn_v, dn_v, false);
+                for i in 0..rh {
+                    data[i * stride + col] = tmp[i];
+                }
             }
         }
     }
