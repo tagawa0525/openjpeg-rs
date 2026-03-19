@@ -447,11 +447,14 @@ impl Tcd {
                         band.x1 = int_ceildivpow2(comp.x1, levelno);
                         band.y1 = int_ceildivpow2(comp.y1, levelno);
                     } else if levelno == 0 {
-                        // Highest resolution: band boundaries = resolution boundaries
-                        band.x0 = res.x0;
-                        band.y0 = res.y0;
-                        band.x1 = res.x1;
-                        band.y1 = res.y1;
+                        // Highest resolution: subband coordinates
+                        // C: opj_int_ceildivpow2(tilec->x0 - (x0b << levelno), levelno + 1)
+                        let x0b = (band.bandno & 1) as i32;
+                        let y0b = (band.bandno >> 1) as i32;
+                        band.x0 = int_ceildivpow2(comp.x0 - x0b, 1);
+                        band.y0 = int_ceildivpow2(comp.y0 - y0b, 1);
+                        band.x1 = int_ceildivpow2(comp.x1 - x0b, 1);
+                        band.y1 = int_ceildivpow2(comp.y1 - y0b, 1);
                     } else {
                         // HL, LH, HH bands at lower resolution levels
                         let half_level = 1i64 << (levelno - 1);
@@ -584,10 +587,7 @@ impl Tcd {
     /// After T1 decode, each codeblock has decoded coefficients in `decoded_data`.
     /// This function places them at the correct subband positions in the tile
     /// component's data buffer, applying dequantization.
-    pub fn copy_decoded_cblks_to_data(
-        &mut self,
-        _tcp: &TileCodingParameters,
-    ) -> Result<()> {
+    pub fn copy_decoded_cblks_to_data(&mut self, _tcp: &TileCodingParameters) -> Result<()> {
         todo!("Phase 1100b: copy_decoded_cblks_to_data")
     }
 
@@ -1072,8 +1072,18 @@ mod tests {
         // But the subband height: ceil(64/2) - ceil(0/2) = 32 high
         let hl = &res1.bands[0]; // bandno=1 (HL)
         assert_eq!(hl.bandno, 1);
-        assert_eq!(hl.x1 - hl.x0, 32, "HL width should be 32, not {}", hl.x1 - hl.x0);
-        assert_eq!(hl.y1 - hl.y0, 32, "HL height should be 32, not {}", hl.y1 - hl.y0);
+        assert_eq!(
+            hl.x1 - hl.x0,
+            32,
+            "HL width should be 32, not {}",
+            hl.x1 - hl.x0
+        );
+        assert_eq!(
+            hl.y1 - hl.y0,
+            32,
+            "HL height should be 32, not {}",
+            hl.y1 - hl.y0
+        );
 
         // LH (bandno=2): width=32, height=32
         let lh = &res1.bands[1]; // bandno=2 (LH)
@@ -1157,10 +1167,10 @@ mod tests {
         comp.data.resize(comp_w * comp_h, 0);
 
         // Get previous resolution dimensions for offset calculation
-        let res0_w = (tcd.tile.comps[0].resolutions[0].x1
-            - tcd.tile.comps[0].resolutions[0].x0) as usize;
-        let res0_h = (tcd.tile.comps[0].resolutions[0].y1
-            - tcd.tile.comps[0].resolutions[0].y0) as usize;
+        let res0_w =
+            (tcd.tile.comps[0].resolutions[0].x1 - tcd.tile.comps[0].resolutions[0].x0) as usize;
+        let res0_h =
+            (tcd.tile.comps[0].resolutions[0].y1 - tcd.tile.comps[0].resolutions[0].y0) as usize;
 
         // Set decoded_data on HL codeblock (bandno & 1 = 1 → x offset)
         for bandno in 0..3 {
