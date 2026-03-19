@@ -729,9 +729,23 @@ pub fn t2_encode_packet(
 
                     // Write segment lengths
                     let cblk = &mut cblks[cblkno];
-                    cblk.numlenbits += increment;
+                    cblk.numlenbits = cblk
+                        .numlenbits
+                        .checked_add(increment)
+                        .ok_or_else(|| Error::InvalidInput("numlenbits overflow".into()))?;
+                    if cblk.numlenbits > 32 {
+                        return Err(Error::InvalidInput(format!(
+                            "numlenbits {} exceeds 32",
+                            cblk.numlenbits
+                        )));
+                    }
                     for &(numpasses_in_seg, seg_data_len) in &segments {
                         let bit_width = cblk.numlenbits + uint_floorlog2(numpasses_in_seg);
+                        if bit_width > 32 {
+                            return Err(Error::InvalidInput(format!(
+                                "segment length bit_width {bit_width} exceeds 32"
+                            )));
+                        }
                         bio.write(seg_data_len, bit_width)?;
                     }
                 }
