@@ -479,6 +479,37 @@ pub fn t2_decode_packets(
     Ok(total_read)
 }
 
+// ---------------------------------------------------------------------------
+// Packet encode (C: opj_t2_encode_packet / opj_t2_encode_packets)
+// ---------------------------------------------------------------------------
+
+/// Encode a single packet (header + body) for one (compno, resno, precno, layno).
+/// Returns the number of bytes written.
+/// (C: opj_t2_encode_packet)
+pub fn t2_encode_packet(
+    _tile: &mut TcdTile,
+    _compno: u32,
+    _resno: u32,
+    _precno: u32,
+    _layno: u32,
+    _cblksty: u32,
+    _dest: &mut [u8],
+) -> Result<usize> {
+    todo!("Phase 1100d: t2_encode_packet")
+}
+
+/// Encode all packets for a tile using packet iterators.
+/// Returns total bytes written.
+/// (C: opj_t2_encode_packets)
+pub fn t2_encode_packets(
+    _tile: &mut TcdTile,
+    _tcp: &crate::j2k::params::TileCodingParameters,
+    _pis: &mut crate::tier2::pi::PacketIterators,
+    _dest: &mut [u8],
+) -> Result<usize> {
+    todo!("Phase 1100d: t2_encode_packets")
+}
+
 pub fn t2_decode_packet(
     tile: &mut TcdTile,
     compno: u32,
@@ -500,8 +531,12 @@ pub fn t2_decode_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coding::t1::TcdPass;
     use crate::coding::tgt::TagTree;
-    use crate::tcd::{TcdBand, TcdCblkDec, TcdCodeBlocks, TcdPrecinct, TcdResolution, TcdTileComp};
+    use crate::tcd::{
+        TcdBand, TcdCblkDec, TcdCblkEnc, TcdCodeBlocks, TcdLayer, TcdPrecinct, TcdResolution,
+        TcdTileComp,
+    };
     use crate::types::{J2K_MAXLAYERS, uint_floorlog2};
 
     // ---------------------------------------------------------------------------
@@ -885,6 +920,316 @@ mod tests {
         t2_init_seg(&mut segs, 5, 0, true);
         assert_eq!(segs.len(), 6);
         assert_eq!(segs[5].maxpasses, 109);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helper: build encoding tile with TcdCblkEnc
+    // ---------------------------------------------------------------------------
+
+    /// Create a 1-component, 1-resolution, 1-band, 1-precinct, 1-codeblock
+    /// encoding tile.
+    fn make_enc_tile_1cblk(
+        band_numbps: i32,
+        cblk_numbps: u32,
+        cblk_data: Vec<u8>,
+        passes: Vec<TcdPass>,
+        layers: Vec<TcdLayer>,
+    ) -> TcdTile {
+        let cblk = TcdCblkEnc {
+            data: cblk_data,
+            layers,
+            passes,
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            numbps: cblk_numbps,
+            numlenbits: 3,
+            numpasses: 0,
+            numpassesinlayers: 0,
+            totalpasses: 0,
+        };
+        let mut incltree = TagTree::new(1, 1);
+        incltree.reset();
+        let mut imsbtree = TagTree::new(1, 1);
+        imsbtree.reset();
+        // Set IMSB value: band_numbps - cblk_numbps
+        imsbtree.set_value(0, band_numbps - cblk_numbps as i32);
+        let prec = TcdPrecinct {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            cw: 1,
+            ch: 1,
+            cblks: TcdCodeBlocks::Enc(vec![cblk]),
+            incltree: Some(incltree),
+            imsbtree: Some(imsbtree),
+        };
+        let band = TcdBand {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            bandno: 0,
+            precincts: vec![prec],
+            numbps: band_numbps,
+            stepsize: 1.0,
+        };
+        let res = TcdResolution {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            pw: 1,
+            ph: 1,
+            numbands: 1,
+            bands: vec![band],
+            win_x0: 0,
+            win_y0: 0,
+            win_x1: 64,
+            win_y1: 64,
+        };
+        let comp = TcdTileComp {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            compno: 0,
+            numresolutions: 1,
+            minimum_num_resolutions: 1,
+            resolutions: vec![res],
+            data: vec![],
+            numpix: 64 * 64,
+            win_x0: 0,
+            win_y0: 0,
+            win_x1: 64,
+            win_y1: 64,
+            data_win: None,
+        };
+        TcdTile {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+            comps: vec![comp],
+            numpix: 64 * 64,
+            distotile: 0.0,
+            distolayer: [0.0; J2K_MAXLAYERS],
+            packno: 0,
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // T2 packet encode tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_encode_empty_packet() {
+        // Layer with 0 passes — should write a single "not present" bit
+        let layers = vec![TcdLayer {
+            numpasses: 0,
+            len: 0,
+            disto: 0.0,
+            data_offset: 0,
+        }];
+        let mut tile = make_enc_tile_1cblk(8, 8, vec![0u8; 16], vec![], layers);
+        let mut buf = vec![0u8; 256];
+        let bytes_written = t2_encode_packet(&mut tile, 0, 0, 0, 0, 0, &mut buf).unwrap();
+        // Empty packet: "not present" bit + alignment = 1 byte
+        assert_eq!(bytes_written, 1);
+        // "not present" bit = 0 in MSB
+        assert_eq!(buf[0] & 0x80, 0);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_encode_single_cblk_packet() {
+        // 1 cblk, 1 layer with 1 pass, 5 bytes of data
+        let cblk_data = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let passes = vec![TcdPass {
+            rate: 5,
+            distortion_decrease: 100.0,
+            len: 5,
+            term: false,
+        }];
+        let layers = vec![TcdLayer {
+            numpasses: 1,
+            len: 5,
+            disto: 100.0,
+            data_offset: 0,
+        }];
+        let mut tile = make_enc_tile_1cblk(8, 8, cblk_data.clone(), passes, layers);
+        let mut buf = vec![0u8; 256];
+        let bytes_written = t2_encode_packet(&mut tile, 0, 0, 0, 0, 0, &mut buf).unwrap();
+        // Should write header + 5 bytes of data
+        assert!(bytes_written > 5);
+        // Data should appear at the end of the packet
+        assert_eq!(&buf[bytes_written - 5..bytes_written], &cblk_data[..5]);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_encode_decode_roundtrip() {
+        // Encode a packet, then decode it and verify the data matches
+        let cblk_data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let passes = vec![TcdPass {
+            rate: 8,
+            distortion_decrease: 50.0,
+            len: 8,
+            term: false,
+        }];
+        let layers = vec![TcdLayer {
+            numpasses: 1,
+            len: 8,
+            disto: 50.0,
+            data_offset: 0,
+        }];
+        let band_numbps = 8i32;
+        let cblk_numbps = 8u32;
+
+        // Encode
+        let mut enc_tile =
+            make_enc_tile_1cblk(band_numbps, cblk_numbps, cblk_data.clone(), passes, layers);
+        let mut buf = vec![0u8; 256];
+        let bytes_written = t2_encode_packet(&mut enc_tile, 0, 0, 0, 0, 0, &mut buf).unwrap();
+
+        // Decode with a fresh decode tile
+        let mut dec_tile = make_tile_1cblk(band_numbps);
+        let total_bytes =
+            t2_decode_packet(&mut dec_tile, 0, 0, 0, 0, 0, &mut buf[..bytes_written]).unwrap();
+        assert_eq!(total_bytes, bytes_written);
+
+        // Verify decoded cblk has the same data
+        let dec_cblk = match &dec_tile.comps[0].resolutions[0].bands[0].precincts[0].cblks {
+            TcdCodeBlocks::Dec(cblks) => &cblks[0],
+            _ => panic!("expected Dec cblks"),
+        };
+        assert_eq!(dec_cblk.chunks.len(), 1);
+        assert_eq!(&dec_cblk.chunks[0].data, &cblk_data);
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_encode_packets_single_layer() {
+        use crate::j2k::params::Poc;
+        use crate::tier2::pi::{PacketIterators, PiComp, PiIterator, PiResolution};
+        use crate::types::ProgressionOrder;
+
+        let cblk_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let passes = vec![TcdPass {
+            rate: 4,
+            distortion_decrease: 10.0,
+            len: 4,
+            term: false,
+        }];
+        let layers = vec![TcdLayer {
+            numpasses: 1,
+            len: 4,
+            disto: 10.0,
+            data_offset: 0,
+        }];
+        let mut tile = make_enc_tile_1cblk(8, 8, cblk_data, passes, layers);
+
+        // Build PacketIterators (same pattern as decode test)
+        let pi_res = PiResolution {
+            pdx: 15,
+            pdy: 15,
+            pw: 1,
+            ph: 1,
+        };
+        let pi_comp = PiComp {
+            dx: 1,
+            dy: 1,
+            numresolutions: 1,
+            resolutions: vec![pi_res],
+        };
+        let poc = Poc {
+            layno1: 1,
+            resno1: 1,
+            compno1: 1,
+            precno1: 1,
+            prg: ProgressionOrder::Lrcp,
+            tx1: 64,
+            ty1: 64,
+            ..Default::default()
+        };
+        let pi = PiIterator {
+            tp_on: false,
+            step_l: 1,
+            step_r: 1,
+            step_c: 1,
+            step_p: 1,
+            compno: 0,
+            resno: 0,
+            precno: 0,
+            layno: 0,
+            first: true,
+            poc,
+            numcomps: 1,
+            comps: vec![pi_comp],
+            tx0: 0,
+            ty0: 0,
+            tx1: 64,
+            ty1: 64,
+            x: 0,
+            y: 0,
+            dx: 0,
+            dy: 0,
+        };
+        let mut pis = PacketIterators {
+            iterators: vec![pi],
+            include: vec![0i16; 1],
+        };
+
+        let tcp = crate::j2k::params::TileCodingParameters {
+            numlayers: 1,
+            tccps: vec![crate::j2k::params::TileCompCodingParameters::default()],
+            ..Default::default()
+        };
+
+        let mut buf = vec![0u8; 256];
+        let bytes_written = t2_encode_packets(&mut tile, &tcp, &mut pis, &mut buf).unwrap();
+        assert!(bytes_written > 4); // header + 4 bytes data
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn t2_encode_multi_pass_single_layer() {
+        // Cblk with 3 passes, all in layer 0
+        let cblk_data = vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0];
+        let passes = vec![
+            TcdPass {
+                rate: 3,
+                distortion_decrease: 30.0,
+                len: 3,
+                term: false,
+            },
+            TcdPass {
+                rate: 7,
+                distortion_decrease: 20.0,
+                len: 4,
+                term: false,
+            },
+            TcdPass {
+                rate: 10,
+                distortion_decrease: 10.0,
+                len: 3,
+                term: false,
+            },
+        ];
+        let layers = vec![TcdLayer {
+            numpasses: 3,
+            len: 10,
+            disto: 60.0,
+            data_offset: 0,
+        }];
+        let mut tile = make_enc_tile_1cblk(8, 8, cblk_data.clone(), passes, layers);
+        let mut buf = vec![0u8; 256];
+        let bytes_written = t2_encode_packet(&mut tile, 0, 0, 0, 0, 0, &mut buf).unwrap();
+        // Should include all 10 bytes of data
+        assert_eq!(&buf[bytes_written - 10..bytes_written], &cblk_data[..]);
     }
 
     // --- Pass bits ---
