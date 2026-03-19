@@ -34,8 +34,10 @@ pub(crate) fn mct_encode_scalar(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) 
 pub fn mct_encode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
+    #[allow(unused_variables)]
+    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+    if n > MCT_PAR_THRESHOLD {
         mct_par_i32(c0, c1, c2, mct_encode_kernel_i32);
         return;
     }
@@ -72,8 +74,10 @@ pub(crate) fn mct_decode_scalar(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) 
 pub fn mct_decode(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
+    #[allow(unused_variables)]
+    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+    if n > MCT_PAR_THRESHOLD {
         mct_par_i32(c0, c1, c2, mct_decode_kernel_i32);
         return;
     }
@@ -108,8 +112,10 @@ pub(crate) fn mct_encode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f
 pub fn mct_encode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
+    #[allow(unused_variables)]
+    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+    if n > MCT_PAR_THRESHOLD {
         mct_par_f32(c0, c1, c2, mct_encode_real_kernel);
         return;
     }
@@ -144,8 +150,10 @@ pub(crate) fn mct_decode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f
 pub fn mct_decode_real(c0: &mut [f32], c1: &mut [f32], c2: &mut [f32]) {
     debug_assert_eq!(c0.len(), c1.len());
     debug_assert_eq!(c1.len(), c2.len());
+    #[allow(unused_variables)]
+    let n = c0.len().min(c1.len()).min(c2.len());
     #[cfg(feature = "parallel")]
-    if c0.len().min(c1.len()).min(c2.len()) > MCT_PAR_THRESHOLD {
+    if n > MCT_PAR_THRESHOLD {
         mct_par_f32(c0, c1, c2, mct_decode_real_kernel);
         return;
     }
