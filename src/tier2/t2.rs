@@ -261,11 +261,15 @@ pub fn t2_read_packet_header(
                     .imsbtree
                     .as_mut()
                     .ok_or_else(|| Error::InvalidInput("missing IMSB tag tree".into()))?;
+                // IMSB max is bounded by band bit-planes + 1 (JPEG 2000 T.800 B.10.5)
+                let imsb_max = (band_numbps as u32).saturating_add(2);
                 let mut i = 0u32;
                 while imsbtree.decode(&mut bio, cblkno as u32, i as i32)? == 0 {
                     i += 1;
-                    if i > 30 {
-                        return Err(Error::InvalidInput("IMSB exceeds bit depth".into()));
+                    if i > imsb_max {
+                        return Err(Error::InvalidInput(format!(
+                            "IMSB value {i} exceeds band bit-planes {band_numbps}"
+                        )));
                     }
                 }
                 let numbps = (band_numbps as u32 + 1).saturating_sub(i);
