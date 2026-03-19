@@ -350,8 +350,14 @@ pub fn t2_read_packet_data(
     precno: u32,
     data: &mut [u8],
 ) -> Result<usize> {
-    let comp = &mut tile.comps[compno as usize];
-    let res = &mut comp.resolutions[resno as usize];
+    let comp = tile
+        .comps
+        .get_mut(compno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("compno {compno} out of range")))?;
+    let res = comp
+        .resolutions
+        .get_mut(resno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("resno {resno} out of range")))?;
     let mut offset = 0usize;
 
     for bandno in 0..res.numbands {
@@ -359,7 +365,10 @@ pub fn t2_read_packet_data(
         if band.is_empty() {
             continue;
         }
-        let prec = &mut band.precincts[precno as usize];
+        let prec = band
+            .precincts
+            .get_mut(precno as usize)
+            .ok_or_else(|| Error::InvalidInput(format!("precno {precno} out of range")))?;
         let num_cblks = (prec.cw * prec.ch) as usize;
 
         if let TcdCodeBlocks::Dec(ref mut cblks) = prec.cblks {
