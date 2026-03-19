@@ -483,10 +483,29 @@ pub fn t2_decode_packets(
 // Packet encode (C: opj_t2_encode_packet / opj_t2_encode_packets)
 // ---------------------------------------------------------------------------
 
+/// Compute maxpasses for a segment, matching `t2_init_seg` logic.
+/// (C: inline in opj_t2_init_seg)
+fn encode_seg_maxpasses(cblksty: u32, first: bool, prev_maxpasses: u32) -> u32 {
+    if (cblksty & J2K_CCP_CBLKSTY_TERMALL) != 0 {
+        1
+    } else if (cblksty & J2K_CCP_CBLKSTY_LAZY) != 0 {
+        if first {
+            10
+        } else if prev_maxpasses == 1 || prev_maxpasses == 10 {
+            2
+        } else {
+            1
+        }
+    } else {
+        109
+    }
+}
+
 /// Collect encoding segments for a code block's layer.
 ///
 /// Returns `(numpasses_in_segment, data_length)` for each segment in the layer.
-/// Segments are split at terminating passes when TERMALL or LAZY cblk style is set.
+/// Segments are split at terminating passes and at maxpasses boundaries,
+/// matching the decoder's `t2_init_seg` segment model.
 fn collect_encode_segments(
     cblk: &TcdCblkEnc,
     first_pass: u32,
@@ -503,20 +522,24 @@ fn collect_encode_segments(
 
     let mut segments = Vec::new();
     let mut seg_start = first_pass;
+    // Track maxpasses for segment capacity — first segment starts fresh
+    let is_first_seg = cblk.numpasses == 0 && seg_start == 0;
+    let mut prev_maxpasses = 0u32;
+    let mut current_maxpasses = encode_seg_maxpasses(cblksty, is_first_seg, prev_maxpasses);
 
     while seg_start < last_pass {
+        let passes_remaining_in_seg = current_maxpasses;
         let mut seg_end = seg_start + 1;
-        while seg_end < last_pass {
-            if (cblksty
-                & (crate::types::J2K_CCP_CBLKSTY_TERMALL | crate::types::J2K_CCP_CBLKSTY_LAZY))
-                != 0
-            {
-                let pass_idx = seg_end as usize - 1;
-                if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
-                    break;
-                }
+        let mut passes_in_seg = 1u32;
+
+        while seg_end < last_pass && passes_in_seg < passes_remaining_in_seg {
+            // Check for terminating pass
+            let pass_idx = seg_end as usize - 1;
+            if pass_idx < cblk.passes.len() && cblk.passes[pass_idx].term {
+                break;
             }
             seg_end += 1;
+            passes_in_seg += 1;
         }
         let numpasses_in_seg = seg_end - seg_start;
 
@@ -535,6 +558,8 @@ fn collect_encode_segments(
 
         segments.push((numpasses_in_seg, seg_data_len));
         seg_start = seg_end;
+        prev_maxpasses = current_maxpasses;
+        current_maxpasses = encode_seg_maxpasses(cblksty, false, prev_maxpasses);
     }
 
     Ok(segments)
