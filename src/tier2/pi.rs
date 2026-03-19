@@ -667,6 +667,162 @@ fn pi_next_cprl(pi: &mut PiIterator, include: &mut [i16]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Packet iterator creation
+// ---------------------------------------------------------------------------
+
+/// Create packet iterators for decoding (C: opj_pi_create_decode).
+///
+/// Builds PacketIterators from image and coding parameters for a given tile.
+pub fn pi_create_decode(
+    image: &crate::image::Image,
+    cp: &crate::j2k::params::CodingParameters,
+    tileno: u32,
+) -> crate::error::Result<PacketIterators> {
+    use crate::error::Error;
+    use crate::types::{int_ceildiv, int_floordivpow2, uint_ceildivpow2};
+
+    let tcp = cp
+        .tcps
+        .get(tileno as usize)
+        .ok_or_else(|| Error::InvalidInput(format!("tileno {tileno} out of range")))?;
+    let numcomps = image.comps.len() as u32;
+
+    // Compute tile boundaries
+    let p = tileno % cp.tw;
+    let q = tileno / cp.tw;
+    let tx0 = (cp.tx0 + p * cp.tdx).max(image.x0);
+    let ty0 = (cp.ty0 + q * cp.tdy).max(image.y0);
+    let tx1 = (cp.tx0 + (p + 1) * cp.tdx).min(image.x1);
+    let ty1 = (cp.ty0 + (q + 1) * cp.tdy).min(image.y1);
+
+    // Build per-component info and find max resolution / max precincts
+    let mut pi_comps = Vec::with_capacity(numcomps as usize);
+    let mut max_res = 0u32;
+    let mut max_prec = 0u32;
+
+    for compno in 0..numcomps as usize {
+        let img_comp = &image.comps[compno];
+        let tccp = tcp
+            .tccps
+            .get(compno)
+            .ok_or_else(|| Error::InvalidInput(format!("missing TCCP for component {compno}")))?;
+        let numresolutions = tccp.numresolutions;
+        max_res = max_res.max(numresolutions);
+
+        let dx = img_comp.dx;
+        let dy = img_comp.dy;
+        if dx == 0 || dy == 0 {
+            return Err(Error::InvalidInput(format!(
+                "component {compno} has zero subsampling"
+            )));
+        }
+
+        // Component tile boundaries (scaled by subsampling)
+        let comp_x0 = int_ceildiv(tx0 as i32, dx as i32);
+        let comp_y0 = int_ceildiv(ty0 as i32, dy as i32);
+        let comp_x1 = int_ceildiv(tx1 as i32, dx as i32);
+        let comp_y1 = int_ceildiv(ty1 as i32, dy as i32);
+
+        let mut pi_resolutions = Vec::with_capacity(numresolutions as usize);
+        for resno in 0..numresolutions as usize {
+            let levelno = (numresolutions as usize - 1 - resno) as i32;
+            let pdx = tccp.prcw[resno];
+            let pdy = tccp.prch[resno];
+
+            let res_x0 = crate::types::int_ceildivpow2(comp_x0, levelno);
+            let res_y0 = crate::types::int_ceildivpow2(comp_y0, levelno);
+            let res_x1 = crate::types::int_ceildivpow2(comp_x1, levelno);
+            let res_y1 = crate::types::int_ceildivpow2(comp_y1, levelno);
+
+            let tprc_x0 = int_floordivpow2(res_x0, pdx as i32) as u32;
+            let tprc_y0 = int_floordivpow2(res_y0, pdy as i32) as u32;
+            let bprc_x1 = uint_ceildivpow2(res_x1 as u32, pdx);
+            let bprc_y1 = uint_ceildivpow2(res_y1 as u32, pdy);
+
+            let pw = if res_x1 > res_x0 {
+                bprc_x1 - tprc_x0
+            } else {
+                0
+            };
+            let ph = if res_y1 > res_y0 {
+                bprc_y1 - tprc_y0
+            } else {
+                0
+            };
+            max_prec = max_prec.max(pw.saturating_mul(ph));
+
+            pi_resolutions.push(PiResolution { pdx, pdy, pw, ph });
+        }
+
+        pi_comps.push(PiComp {
+            dx,
+            dy,
+            numresolutions,
+            resolutions: pi_resolutions,
+        });
+    }
+
+    // Compute include array strides and size
+    let step_p = 1u32;
+    let step_c = max_prec.saturating_mul(step_p);
+    let step_r = numcomps.saturating_mul(step_c);
+    let step_l = max_res.saturating_mul(step_r);
+
+    let numlayers = tcp.numlayers.max(1);
+    let include_size = (numlayers as u64).saturating_mul(step_l as u64);
+    const MAX_INCLUDE_SIZE: u64 = 64 * 1024 * 1024; // 64M entries
+    if include_size > MAX_INCLUDE_SIZE {
+        return Err(crate::error::Error::InvalidInput(format!(
+            "include array size {include_size} exceeds limit {MAX_INCLUDE_SIZE}"
+        )));
+    }
+    let include = vec![0i16; include_size as usize];
+
+    // Build POC: single progression order covering the full tile
+    let poc = Poc {
+        layno1: numlayers,
+        resno1: max_res,
+        compno1: numcomps,
+        precno1: max_prec,
+        prg: tcp.prg,
+        tx0: tx0 as i32,
+        ty0: ty0 as i32,
+        tx1: tx1 as i32,
+        ty1: ty1 as i32,
+        ..Default::default()
+    };
+
+    let pi = PiIterator {
+        tp_on: false,
+        step_l,
+        step_r,
+        step_c,
+        step_p,
+        compno: 0,
+        resno: 0,
+        precno: 0,
+        layno: 0,
+        first: true,
+        poc,
+        numcomps,
+        comps: pi_comps,
+        tx0,
+        ty0,
+        tx1,
+        ty1,
+        x: 0,
+        y: 0,
+        dx: 0,
+        dy: 0,
+    };
+
+    Ok(PacketIterators {
+        iterators: vec![pi],
+        include,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Public helper functions
 // ---------------------------------------------------------------------------
 
@@ -1017,6 +1173,70 @@ mod tests {
     }
 
     // --- Empty tile ---
+
+    // --- pi_create_decode ---
+
+    #[test]
+    fn pi_create_decode_basic() {
+        use crate::image::{Image, ImageCompParam};
+        use crate::j2k::params::{
+            CodingParamMode, CodingParameters, DecodingParam, TileCodingParameters,
+            TileCompCodingParameters,
+        };
+        use crate::types::ColorSpace;
+
+        // 1 component, 64x64, 2 resolutions, 1 layer, LRCP
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 64,
+            h: 64,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x1 = 64;
+        image.y1 = 64;
+
+        let tccp = TileCompCodingParameters {
+            numresolutions: 2,
+            cblkw: 6,
+            cblkh: 6,
+            qmfbid: 1,
+            ..Default::default()
+        };
+        let tcp = TileCodingParameters {
+            numlayers: 1,
+            prg: ProgressionOrder::Lrcp,
+            tccps: vec![tccp],
+            ..Default::default()
+        };
+        let cp = CodingParameters {
+            tx0: 0,
+            ty0: 0,
+            tdx: 64,
+            tdy: 64,
+            tw: 1,
+            th: 1,
+            tcps: vec![tcp],
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..CodingParameters::new_encoder()
+        };
+
+        let pis = pi_create_decode(&image, &cp, 0).unwrap();
+        assert!(!pis.is_empty());
+        // Should have at least 1 iterator (for the default POC)
+        assert_eq!(pis.len(), 1);
+        // The iterator should produce packets (1 layer * (precincts@res0 + precincts@res1))
+        let mut pis = pis;
+        let mut count = 0;
+        while pis.next(0) {
+            count += 1;
+        }
+        assert!(count > 0);
+    }
 
     #[test]
     fn empty_tile_returns_false() {
