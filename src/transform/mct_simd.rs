@@ -13,7 +13,9 @@ mod inner {
     use std::arch::x86_64::*;
 
     use crate::transform::mct::{
-        mct_decode_real_scalar, mct_decode_scalar, mct_encode_real_scalar, mct_encode_scalar,
+        ICT_CBB, ICT_CBG, ICT_CBR, ICT_CRB, ICT_CRG, ICT_CRR, ICT_VBU, ICT_VGU, ICT_VGV, ICT_VRV,
+        ICT_YB, ICT_YG, ICT_YR, mct_decode_real_scalar, mct_decode_scalar, mct_encode_real_scalar,
+        mct_encode_scalar,
     };
 
     // -----------------------------------------------------------------------
@@ -165,15 +167,15 @@ mod inner {
         let n = c0.len().min(c1.len()).min(c2.len());
         let chunks = n / 8;
         unsafe {
-            let yr = _mm256_set1_ps(0.299);
-            let yg = _mm256_set1_ps(0.587);
-            let yb = _mm256_set1_ps(0.114);
-            let cbr = _mm256_set1_ps(-0.16875);
-            let cbg = _mm256_set1_ps(-0.331260);
-            let cbb = _mm256_set1_ps(0.5);
-            let crr = _mm256_set1_ps(0.5);
-            let crg = _mm256_set1_ps(-0.41869);
-            let crb = _mm256_set1_ps(-0.08131);
+            let yr = _mm256_set1_ps(ICT_YR);
+            let yg = _mm256_set1_ps(ICT_YG);
+            let yb = _mm256_set1_ps(ICT_YB);
+            let cbr = _mm256_set1_ps(ICT_CBR);
+            let cbg = _mm256_set1_ps(ICT_CBG);
+            let cbb = _mm256_set1_ps(ICT_CBB);
+            let crr = _mm256_set1_ps(ICT_CRR);
+            let crg = _mm256_set1_ps(ICT_CRG);
+            let crb = _mm256_set1_ps(ICT_CRB);
 
             for i in 0..chunks {
                 let off = i * 8;
@@ -217,15 +219,15 @@ mod inner {
         let n = c0.len().min(c1.len()).min(c2.len());
         let chunks = n / 4;
         unsafe {
-            let yr = _mm_set1_ps(0.299);
-            let yg = _mm_set1_ps(0.587);
-            let yb = _mm_set1_ps(0.114);
-            let cbr = _mm_set1_ps(-0.16875);
-            let cbg = _mm_set1_ps(-0.331260);
-            let cbb = _mm_set1_ps(0.5);
-            let crr = _mm_set1_ps(0.5);
-            let crg = _mm_set1_ps(-0.41869);
-            let crb = _mm_set1_ps(-0.08131);
+            let yr = _mm_set1_ps(ICT_YR);
+            let yg = _mm_set1_ps(ICT_YG);
+            let yb = _mm_set1_ps(ICT_YB);
+            let cbr = _mm_set1_ps(ICT_CBR);
+            let cbg = _mm_set1_ps(ICT_CBG);
+            let cbb = _mm_set1_ps(ICT_CBB);
+            let crr = _mm_set1_ps(ICT_CRR);
+            let crg = _mm_set1_ps(ICT_CRG);
+            let crb = _mm_set1_ps(ICT_CRB);
 
             for i in 0..chunks {
                 let off = i * 4;
@@ -273,10 +275,10 @@ mod inner {
         let n = c0.len().min(c1.len()).min(c2.len());
         let chunks = n / 8;
         unsafe {
-            let vrv = _mm256_set1_ps(1.402);
-            let vgu = _mm256_set1_ps(0.34413);
-            let vgv = _mm256_set1_ps(0.71414);
-            let vbu = _mm256_set1_ps(1.772);
+            let vrv = _mm256_set1_ps(ICT_VRV);
+            let vgu = _mm256_set1_ps(ICT_VGU);
+            let vgv = _mm256_set1_ps(ICT_VGV);
+            let vbu = _mm256_set1_ps(ICT_VBU);
 
             for i in 0..chunks {
                 let off = i * 8;
@@ -314,10 +316,10 @@ mod inner {
         let n = c0.len().min(c1.len()).min(c2.len());
         let chunks = n / 4;
         unsafe {
-            let vrv = _mm_set1_ps(1.402);
-            let vgu = _mm_set1_ps(0.34413);
-            let vgv = _mm_set1_ps(0.71414);
-            let vbu = _mm_set1_ps(1.772);
+            let vrv = _mm_set1_ps(ICT_VRV);
+            let vgu = _mm_set1_ps(ICT_VGU);
+            let vgv = _mm_set1_ps(ICT_VGV);
+            let vbu = _mm_set1_ps(ICT_VBU);
 
             for i in 0..chunks {
                 let off = i * 4;

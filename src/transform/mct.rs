@@ -16,6 +16,23 @@ pub static MCT_NORMS_REAL: [f64; 3] = [1.732, 1.805, 1.573];
 #[cfg(feature = "parallel")]
 const MCT_PAR_THRESHOLD: usize = 4096;
 
+// ICT forward coefficients (ITU-T T.800 Annex G)
+pub(crate) const ICT_YR: f32 = 0.299;
+pub(crate) const ICT_YG: f32 = 0.587;
+pub(crate) const ICT_YB: f32 = 0.114;
+pub(crate) const ICT_CBR: f32 = -0.16875;
+pub(crate) const ICT_CBG: f32 = -0.331260;
+pub(crate) const ICT_CBB: f32 = 0.5;
+pub(crate) const ICT_CRR: f32 = 0.5;
+pub(crate) const ICT_CRG: f32 = -0.41869;
+pub(crate) const ICT_CRB: f32 = -0.08131;
+
+// ICT inverse coefficients
+pub(crate) const ICT_VRV: f32 = 1.402;
+pub(crate) const ICT_VGU: f32 = 0.34413;
+pub(crate) const ICT_VGV: f32 = 0.71414;
+pub(crate) const ICT_VBU: f32 = 1.772;
+
 /// Scalar forward RCT kernel.
 pub(crate) fn mct_encode_scalar(c0: &mut [i32], c1: &mut [i32], c2: &mut [i32]) {
     let n = c0.len().min(c1.len()).min(c2.len());
@@ -102,9 +119,9 @@ pub(crate) fn mct_encode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f
         let r = c0[i];
         let g = c1[i];
         let b = c2[i];
-        c0[i] = 0.299f32 * r + 0.587f32 * g + 0.114f32 * b;
-        c1[i] = -0.16875f32 * r - 0.331260f32 * g + 0.5f32 * b;
-        c2[i] = 0.5f32 * r - 0.41869f32 * g - 0.08131f32 * b;
+        c0[i] = ICT_YR * r + ICT_YG * g + ICT_YB * b;
+        c1[i] = ICT_CBR * r + ICT_CBG * g + ICT_CBB * b;
+        c2[i] = ICT_CRR * r + ICT_CRG * g + ICT_CRB * b;
     }
 }
 
@@ -140,9 +157,9 @@ pub(crate) fn mct_decode_real_scalar(c0: &mut [f32], c1: &mut [f32], c2: &mut [f
         let y = c0[i];
         let u = c1[i];
         let v = c2[i];
-        c0[i] = y + v * 1.402f32;
-        c1[i] = y - u * 0.34413f32 - v * 0.71414f32;
-        c2[i] = y + u * 1.772f32;
+        c0[i] = y + v * ICT_VRV;
+        c1[i] = y - u * ICT_VGU - v * ICT_VGV;
+        c2[i] = y + u * ICT_VBU;
     }
 }
 
