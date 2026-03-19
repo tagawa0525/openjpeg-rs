@@ -1480,14 +1480,19 @@ fn decode_one_cblk(job: &CblkDecodeJob) -> Result<Vec<i32>> {
         return Ok(t1.data);
     }
 
-    let segments: Vec<DecodeSegment> = job
-        .seg_info
-        .iter()
-        .map(|&(off, len, np)| DecodeSegment {
+    let mut segments: Vec<DecodeSegment> = Vec::with_capacity(job.seg_info.len());
+    for &(off, len, np) in &job.seg_info {
+        if off + len > job.data.len() {
+            return Err(Error::InvalidInput(format!(
+                "segment offset {off}+{len} exceeds data length {}",
+                job.data.len()
+            )));
+        }
+        segments.push(DecodeSegment {
             data: &job.data[off..off + len],
             num_passes: np,
-        })
-        .collect();
+        });
+    }
 
     let is_ht = (job.cblksty & J2K_CCP_CBLKSTY_HT) != 0;
     if is_ht {
@@ -1538,9 +1543,9 @@ struct CblkEncodeResult {
 }
 
 /// Process a single codeblock encode job.
-fn encode_one_cblk(job: &CblkEncodeJob) -> CblkEncodeResult {
+fn encode_one_cblk(job: &CblkEncodeJob) -> Result<CblkEncodeResult> {
     let mut t1 = T1::new(true);
-    t1.allocate_buffers(job.w, job.h).expect("allocate_buffers");
+    t1.allocate_buffers(job.w, job.h)?;
     t1.data[..job.zigzag_data.len()].copy_from_slice(&job.zigzag_data);
 
     let mut enc_buf = vec![0u8; (job.w * job.h * 4 + 1024) as usize];
@@ -1571,11 +1576,11 @@ fn encode_one_cblk(job: &CblkEncodeJob) -> CblkEncodeResult {
         0
     };
 
-    CblkEncodeResult {
+    Ok(CblkEncodeResult {
         data,
         passes,
         numbps,
-    }
+    })
 }
 
 /// Decode all codeblocks in a tile (C: opj_t1_decode_cblks).
@@ -1614,7 +1619,7 @@ pub fn t1_decode_cblks(tile: &mut TcdTile, tcp: &TileCodingParameters) -> Result
                             let mut data = vec![0u8; total_len + COMMON_CBLK_DATA_EXTRA];
                             let mut off = 0;
                             for chunk in &cblk.chunks {
-                                let clen = chunk.len as usize;
+                                let clen = (chunk.len as usize).min(chunk.data.len());
                                 data[off..off + clen].copy_from_slice(&chunk.data[..clen]);
                                 off += clen;
                             }
@@ -1780,7 +1785,7 @@ pub fn t1_encode_cblks(
     }
 
     // 2. Process jobs and write back results
-    let results: Vec<CblkEncodeResult>;
+    let results: Vec<Result<CblkEncodeResult>>;
 
     #[cfg(feature = "parallel")]
     {
@@ -1792,6 +1797,7 @@ pub fn t1_encode_cblks(
         results = jobs.iter().map(encode_one_cblk).collect();
     }
     for (job, result) in jobs.iter().zip(results) {
+        let result = result?;
         if let TcdCodeBlocks::Enc(cblks) =
             &mut tile.comps[job.comp].resolutions[job.res].bands[job.band].precincts[job.prec].cblks
         {
