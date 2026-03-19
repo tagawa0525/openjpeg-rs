@@ -104,8 +104,7 @@ mod inner {
             }
 
             // Deinterleave: move even rows (s) to top, odd rows (d) to bottom.
-            // We need a temporary buffer for the rearrangement.
-            // Use a stack buffer for up to 64 rows, heap-allocate for larger.
+            // Temporary buffer for row rearrangement.
             let mut buf = vec![[0i32; 8]; rh];
 
             // Read all rows
@@ -238,7 +237,7 @@ mod inner {
         dn: usize,
         col_base: usize,
     ) {
-        if sn + dn <= 1 {
+        if sn + dn <= 1 || (dn > 0 && sn == 0) {
             return;
         }
 
@@ -336,7 +335,7 @@ mod inner {
         dn: usize,
         col_base: usize,
     ) {
-        if sn + dn <= 1 {
+        if sn + dn <= 1 || (dn > 0 && sn == 0) {
             return;
         }
 
@@ -591,6 +590,52 @@ mod tests {
 
         for row in 0..h {
             for col in 0..8 {
+                assert_eq!(
+                    scalar[row * stride + col],
+                    simd[row * stride + col],
+                    "mismatch at row={row}, col={col}"
+                );
+            }
+        }
+    }
+
+    /// Verify decode SSE2 vertical pass matches scalar.
+    #[test]
+    fn decode_vert_53_sse2_matches_scalar() {
+        if !is_x86_feature_detected!("sse2") {
+            return;
+        }
+        let w = 16;
+        let h = 10;
+        let stride = w;
+        let sn = 5;
+        let dn = 5;
+
+        let encoded: Vec<i32> = (0..w * h)
+            .map(|i| (i as i32 * 13 + 3) % 200 - 100)
+            .collect();
+
+        let mut scalar = encoded.clone();
+        {
+            let mut tmp = vec![0i32; h];
+            let mut sep = vec![0i32; h];
+            for j in 0..4 {
+                for i in 0..h {
+                    sep[i] = scalar[i * stride + j];
+                }
+                crate::transform::dwt::interleave_h(&sep[..h], &mut tmp[..h], sn, dn, false);
+                crate::transform::dwt::dwt_decode_1_53(&mut tmp[..h], sn, dn, false);
+                for i in 0..h {
+                    scalar[i * stride + j] = tmp[i];
+                }
+            }
+        }
+
+        let mut simd = encoded.clone();
+        unsafe { dwt_decode_vert_53_sse2(&mut simd, stride, h, sn, dn, 0) };
+
+        for row in 0..h {
+            for col in 0..4 {
                 assert_eq!(
                     scalar[row * stride + col],
                     simd[row * stride + col],
