@@ -735,26 +735,17 @@ impl Tcd {
 
             let comp = &mut self.tile.comps[desc.compno];
             let comp_w = (comp.x1 - comp.x0) as usize;
-            // T1 data is in stripe-column layout: 4-row stripes, column by column.
-            // data[stripe * w * 4 + col * stripe_h + row_in_stripe]
-            let mut datap = 0usize;
-            for stripe_start in (0..desc.cblk_h).step_by(4) {
-                let stripe_h = 4.min(desc.cblk_h - stripe_start);
+            // T1 data is in row-major layout: data[row * w + col]
+            for j in 0..desc.cblk_h {
+                let src_off = j * desc.cblk_w;
+                let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
                 for i in 0..desc.cblk_w {
-                    for r in 0..stripe_h {
-                        let row = stripe_start + r;
-                        let dst_off = (desc.buf_y + row) * comp_w + desc.buf_x + i;
-                        let val = decoded_data[datap];
-                        comp.data[dst_off] = if desc.qmfbid == 1 {
-                            // No FRACBITS shift and numbps aligned → value is exact coefficient.
-                            val
-                        } else {
-                            (val as f32 * desc.stepsize) as i32
-                        };
-                        datap += 1;
-                    }
-                    // Skip padding in partial stripe
-                    datap += 4 - stripe_h;
+                    let val = decoded_data[src_off + i];
+                    comp.data[dst_off + i] = if desc.qmfbid == 1 {
+                        val
+                    } else {
+                        (val as f32 * desc.stepsize) as i32
+                    };
                 }
             }
 
@@ -1610,22 +1601,11 @@ mod tests {
             panic!("expected Dec");
         };
 
-        // Fill decoded_data in T1 stripe-column layout:
-        // stripe 0: col0 rows 0-3, col1 rows 0-3, ...
-        // Assign value (row * cblk_w + col + 1) * 2 at each spatial position (col, row).
+        // Fill decoded_data in row-major layout: data[row * w + col]
+        // Identity dequant for reversible (no scaling).
         let mut test_data = vec![0i32; cblk_w * cblk_h];
-        let mut datap = 0usize;
-        for stripe_start in (0..cblk_h).step_by(4) {
-            let stripe_h = 4.min(cblk_h - stripe_start);
-            for c in 0..cblk_w {
-                for r in 0..stripe_h {
-                    let row = stripe_start + r;
-                    // No scaling needed — dequant is identity for reversible
-                    test_data[datap] = (row * cblk_w + c) as i32 + 1;
-                    datap += 1;
-                }
-                datap += 4 - stripe_h;
-            }
+        for (i, val) in test_data.iter_mut().enumerate() {
+            *val = i as i32 + 1;
         }
         if let TcdCodeBlocks::Dec(cblks) =
             &mut tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
@@ -1688,7 +1668,7 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): raw = (1+1)*200=400. x offset = res0_w (no dequant division)
+        // HL (bandno=1): raw = (1+1)*200=400. x offset = res0_w (identity dequant)
         let hl_val = tcd.tile.comps[0].data[res0_w];
         assert_eq!(hl_val, 400, "HL should be at x=res0_w");
 
