@@ -1912,6 +1912,139 @@ mod tests {
         }
     }
 
+    /// Verify each pipeline stage of encode→decode roundtrip independently.
+    /// Catches regressions at a specific stage rather than just the final output.
+    #[test]
+    fn encode_decode_pipeline_stages() {
+        use crate::coding::t1::{t1_decode_cblks, t1_encode_cblks};
+        use crate::tcd::TcdCodeBlocks;
+        use crate::tier2::pi::pi_create_decode;
+        use crate::tier2::t2::{t2_decode_packets, t2_encode_packets};
+
+        let (image, cp, tcp) = create_encode_test_setup();
+        // Input: 8×8, gradient [0,4,8,...,252], dc_shift=128
+
+        // --- Encode side ---
+        let mut enc_tcd = Tcd::new(true);
+        enc_tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+        enc_tcd.tile.comps[0].data = image.comps[0].data.clone();
+
+        // Stage 1: DC level shift (subtract 128)
+        enc_tcd.dc_level_shift_encode(&tcp);
+        assert_eq!(enc_tcd.tile.comps[0].data[0], -128); // 0 - 128
+        assert_eq!(enc_tcd.tile.comps[0].data[1], -124); // 4 - 128
+
+        // Stage 2: T1 encode
+        let numcomps = enc_tcd.tile.comps.len() as u32;
+        t1_encode_cblks(&mut enc_tcd.tile, &tcp, None, numcomps).unwrap();
+
+        // Encoder cblk should have data
+        let (enc_numbps, enc_has_passes) = if let TcdCodeBlocks::Enc(ref cblks) =
+            enc_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            (cblks[0].numbps, !cblks[0].passes.is_empty())
+        } else {
+            panic!("expected Enc");
+        };
+        assert!(enc_numbps > 0, "encoder should produce nonzero numbps");
+        assert!(enc_has_passes, "encoder should produce passes");
+
+        // Stage 3: T2 encode
+        enc_tcd.makelayer_fixed(&tcp);
+        let mut encoded = vec![0u8; 8192];
+        let mut pis_enc = pi_create_decode(&image, &cp, 0).unwrap();
+        let enc_len =
+            t2_encode_packets(&mut enc_tcd.tile, &tcp, &mut pis_enc, &mut encoded).unwrap();
+        assert!(enc_len > 0, "T2 should produce nonzero output");
+
+        // --- Decode side ---
+        let dec_cp = CodingParameters {
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..cp.clone()
+        };
+        let mut dec_tcd = Tcd::new(false);
+        dec_tcd.init_tile(0, &image, &dec_cp, &tcp, false).unwrap();
+        let comp = &mut dec_tcd.tile.comps[0];
+        let w = (comp.x1 - comp.x0) as usize;
+        let h = (comp.y1 - comp.y0) as usize;
+        comp.data.resize(w * h, 0);
+
+        // Stage 4: T2 decode
+        let max_layers = tcp.numlayers.max(1);
+        let mut pis_dec = pi_create_decode(&image, &dec_cp, 0).unwrap();
+        t2_decode_packets(
+            &mut dec_tcd.tile,
+            &tcp,
+            &mut pis_dec,
+            &mut encoded[..enc_len],
+            max_layers,
+        )
+        .unwrap();
+
+        let dec_numbps = if let TcdCodeBlocks::Dec(ref cblks) =
+            dec_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            cblks[0].numbps
+        } else {
+            panic!("expected Dec");
+        };
+        assert_eq!(
+            dec_numbps, enc_numbps,
+            "decoder numbps should match encoder"
+        );
+
+        // Stage 5: T1 decode
+        t1_decode_cblks(&mut dec_tcd.tile, &tcp).unwrap();
+
+        let decoded_coeffs = if let TcdCodeBlocks::Dec(ref cblks) =
+            dec_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            cblks[0].decoded_data.clone().expect("decoded_data missing")
+        } else {
+            panic!("expected Dec");
+        };
+        // T1 decoder produces row-major data at original coefficient scale
+        assert_eq!(decoded_coeffs.len(), 64);
+        // First row coefficients should be near DC-shifted originals
+        for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
+            let expected = image.comps[0].data[i] - 128;
+            let diff = (coeff - expected).abs();
+            assert!(
+                diff <= 1,
+                "T1 decoded coeff[{}]: expected={}, got={}, diff={}",
+                i,
+                expected,
+                coeff,
+                diff
+            );
+        }
+
+        // Stage 6: Copy decoded cblks → tile data (identity dequant, row-major)
+        dec_tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
+        for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
+            assert_eq!(
+                dec_tcd.tile.comps[0].data[i], coeff,
+                "copy should preserve value at index {i}"
+            );
+        }
+
+        // Stage 7: DC level unshift (add 128)
+        dec_tcd.dc_level_shift_decode(&tcp);
+        for i in 0..8 {
+            let orig = image.comps[0].data[i];
+            let dec = dec_tcd.tile.comps[0].data[i];
+            let diff = (dec - orig).abs();
+            assert!(
+                diff <= 1,
+                "final pixel[{}]: original={}, decoded={}, diff={}",
+                i,
+                orig,
+                dec,
+                diff
+            );
+        }
+    }
+
     #[test]
     fn init_tile_rejects_zero_numresolutions() {
         let (image, cp, _) = create_test_setup(true);
