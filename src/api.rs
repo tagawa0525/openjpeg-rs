@@ -68,41 +68,101 @@ pub fn decode_owned(data: Vec<u8>, format: CodecFormat) -> Result<Image> {
 pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
     use crate::j2k::write::J2kEncoder;
+    use crate::tcd::Tcd;
 
-    // Build minimal coding parameters from image
+    // Build coding parameters from image
     let w = image.x1.saturating_sub(image.x0);
     let h = image.y1.saturating_sub(image.y0);
     if w == 0 || h == 0 || image.comps.is_empty() {
         return Err(Error::InvalidInput("Invalid image for encoding".into()));
     }
 
+    let prec = image.comps[0].prec;
+    // Validate all components share the same precision (per-component precision not yet supported)
+    if image.comps.iter().any(|c| c.prec != prec) {
+        return Err(Error::InvalidInput(
+            "All components must have the same precision for encoding".into(),
+        ));
+    }
+
     let tccps: Vec<_> = image
         .comps
         .iter()
-        .map(|_| TileCompCodingParameters {
-            numresolutions: 1,
-            cblkw: 6,
-            cblkh: 6,
-            qmfbid: 1,
-            ..Default::default()
+        .map(|comp| {
+            let comp_dc = if !comp.sgnd && comp.prec > 0 && comp.prec <= 31 {
+                1i32 << (comp.prec - 1)
+            } else {
+                0
+            };
+            TileCompCodingParameters {
+                numresolutions: 1,
+                cblkw: 6,
+                cblkh: 6,
+                qmfbid: 1,
+                m_dc_level_shift: comp_dc,
+                ..Default::default()
+            }
         })
         .collect();
-    let tcp = TileCodingParameters {
+    let mut tcp = TileCodingParameters {
         numlayers: 1,
         tccps,
         ..Default::default()
     };
+
+    // Compute stepsizes for encoding
+    Tcd::calc_explicit_stepsizes(&mut tcp, prec);
+
     let cp = CodingParameters {
+        tx0: image.x0,
+        ty0: image.y0,
         tdx: w,
         tdy: h,
         tw: 1,
         th: 1,
+        tcps: vec![tcp.clone()],
         ..CodingParameters::new_encoder()
     };
 
+    // Encode tile data via TCD pipeline
+    let mut tcd = Tcd::new(true);
+    tcd.init_tile(0, image, &cp, &tcp, true)?;
+
+    // Copy image pixel data to tile components
+    for (compno, comp) in image.comps.iter().enumerate() {
+        if compno < tcd.tile.comps.len() {
+            let tile_comp = &mut tcd.tile.comps[compno];
+            let expected = tile_comp.numpix;
+            if comp.data.len() != expected {
+                tile_comp.data.resize(comp.data.len(), 0);
+            }
+            tile_comp.data.copy_from_slice(&comp.data);
+        }
+    }
+
+    // Encode: DC shift → MCT → DWT → T1 → makelayer → T2
+    let mut buf_size = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|v| v.checked_mul(image.comps.len()))
+        .and_then(|v| v.checked_mul(4))
+        .and_then(|v| v.checked_add(4096))
+        .ok_or(Error::BufferTooSmall)?;
+    let mut tile_buf = vec![0u8; buf_size];
+    let tile_len = loop {
+        match tcd.encode_tile(image, &cp, &tcp, &mut tile_buf) {
+            Ok(len) => break len,
+            Err(Error::BufferTooSmall) => {
+                buf_size = buf_size.checked_mul(2).ok_or(Error::BufferTooSmall)?;
+                tile_buf = vec![0u8; buf_size];
+            }
+            Err(e) => return Err(e),
+        }
+    };
+
+    // Write J2K codestream
     let mut j2k_enc = J2kEncoder::new();
     j2k_enc.write_header(image, &cp, &tcp)?;
-    j2k_enc.write_tile(0, &[0u8; 4], 0, 1)?;
+    j2k_enc.write_tile(0, &tile_buf[..tile_len], 0, 1)?;
     let j2k_data = j2k_enc.finalize();
 
     match format {
@@ -351,5 +411,72 @@ mod tests {
         assert_eq!(decoded.y1, 4);
         assert_eq!(decoded.comps.len(), 3);
         assert_eq!(decoded.color_space, ColorSpace::Srgb);
+    }
+
+    #[test]
+    fn encode_j2k_produces_decodable_pixels() {
+        // Encode a grayscale image with pixel data, then decode and verify
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 8,
+            h: 8,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x0 = 0;
+        image.y0 = 0;
+        image.x1 = 8;
+        image.y1 = 8;
+        // Fill with gradient
+        image.comps[0].data = (0..64).map(|i| i * 4).collect();
+
+        let encoded = encode(&image, CodecFormat::J2k).unwrap();
+        assert!(encoded.len() > 10, "encoded data should be non-trivial");
+
+        let decoded = decode(&encoded, CodecFormat::J2k).unwrap();
+        assert_eq!(decoded.comps.len(), 1);
+        assert_eq!(decoded.comps[0].data.len(), 64);
+
+        // Decoded pixels should have a range (not all same value)
+        let min = *decoded.comps[0].data.iter().min().unwrap();
+        let max = *decoded.comps[0].data.iter().max().unwrap();
+        assert!(max > min, "decoded pixels should vary");
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_jp2_with_pixels() {
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 4,
+            h: 4,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x0 = 0;
+        image.y0 = 0;
+        image.x1 = 4;
+        image.y1 = 4;
+        image.comps[0].data = vec![100; 16]; // uniform pixel value
+
+        let encoded = encode(&image, CodecFormat::Jp2).unwrap();
+        let decoded = decode(&encoded, CodecFormat::Jp2).unwrap();
+
+        assert_eq!(decoded.comps[0].data.len(), 16);
+        // For uniform input, all decoded pixels should be the same
+        let unique: std::collections::HashSet<i32> =
+            decoded.comps[0].data.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "uniform input should decode to uniform output"
+        );
     }
 }
