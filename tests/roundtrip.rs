@@ -109,7 +109,6 @@ fn lossless_options() -> EncodeOptions {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_53_lossless_gradient_gray() {
     let image = build_gray_image(16, 16, |i| (i % 256) as i32);
     let encoded = encode_with_params(&image, CodecFormat::J2k, &lossless_options()).unwrap();
@@ -118,7 +117,6 @@ fn roundtrip_53_lossless_gradient_gray() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_53_lossless_random_gray() {
     // Deterministic pseudo-random via simple LCG
     let mut seed: u32 = 12345;
@@ -132,7 +130,6 @@ fn roundtrip_53_lossless_random_gray() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_53_lossless_edge_values() {
     let image = build_gray_image(8, 8, |i| {
         let row = i / 8;
@@ -150,7 +147,7 @@ fn roundtrip_53_lossless_edge_values() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
+#[ignore = "multi-resolution DWT encode/decode pipeline not yet integrated"]
 fn roundtrip_53_lossless_multi_resolution() {
     let image = build_gray_image(32, 32, |i| (i % 256) as i32);
     let options = EncodeOptions {
@@ -164,7 +161,6 @@ fn roundtrip_53_lossless_multi_resolution() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_53_lossless_rgb() {
     let image = build_rgb_image(
         16,
@@ -186,7 +182,6 @@ fn roundtrip_53_lossless_rgb() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_53_lossless_non_power_of_2() {
     let image = build_gray_image(13, 7, |i| (i % 256) as i32);
     let encoded = encode_with_params(&image, CodecFormat::J2k, &lossless_options()).unwrap();
@@ -195,7 +190,6 @@ fn roundtrip_53_lossless_non_power_of_2() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn roundtrip_jp2_format_lossless() {
     let image = build_gray_image(16, 16, |i| (i % 256) as i32);
     let encoded = encode_with_params(&image, CodecFormat::Jp2, &lossless_options()).unwrap();
@@ -208,7 +202,7 @@ fn roundtrip_jp2_format_lossless() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "not yet implemented"]
+#[ignore = "9-7 irreversible quantization not yet implemented in encoder"]
 fn roundtrip_97_lossy_psnr() {
     let image = build_gray_image(32, 32, |i| (i % 256) as i32);
     let options = EncodeOptions {

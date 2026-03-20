@@ -84,23 +84,15 @@ impl Default for EncodeOptions {
 /// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
 /// For J2K, returns raw codestream.
 pub fn encode_with_params(
-    _image: &Image,
-    _format: CodecFormat,
-    _options: &EncodeOptions,
+    image: &Image,
+    format: CodecFormat,
+    options: &EncodeOptions,
 ) -> Result<Vec<u8>> {
-    Err(Error::InvalidInput("not yet implemented".into()))
-}
-
-/// Encode an image to JPEG 2000 format with default options (5-3 lossless, single resolution).
-///
-/// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
-/// For J2K, returns raw codestream.
-pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
     use crate::j2k::write::J2kEncoder;
     use crate::tcd::Tcd;
+    use crate::types::{J2K_CCP_QNTSTY_NOQNT, J2K_CCP_QNTSTY_SIQNT};
 
-    // Build coding parameters from image
     let w = image.x1.saturating_sub(image.x0);
     let h = image.y1.saturating_sub(image.y0);
     if w == 0 || h == 0 || image.comps.is_empty() {
@@ -108,12 +100,17 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     }
 
     let prec = image.comps[0].prec;
-    // Validate all components share the same precision (per-component precision not yet supported)
     if image.comps.iter().any(|c| c.prec != prec) {
         return Err(Error::InvalidInput(
             "All components must have the same precision for encoding".into(),
         ));
     }
+
+    let qntsty = if options.qmfbid == 1 {
+        J2K_CCP_QNTSTY_NOQNT
+    } else {
+        J2K_CCP_QNTSTY_SIQNT
+    };
 
     let tccps: Vec<_> = image
         .comps
@@ -125,10 +122,11 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
                 0
             };
             TileCompCodingParameters {
-                numresolutions: 1,
+                numresolutions: options.numresolutions,
                 cblkw: 6,
                 cblkh: 6,
-                qmfbid: 1,
+                qmfbid: options.qmfbid,
+                qntsty,
                 m_dc_level_shift: comp_dc,
                 ..Default::default()
             }
@@ -136,11 +134,11 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
         .collect();
     let mut tcp = TileCodingParameters {
         numlayers: 1,
+        mct: options.mct,
         tccps,
         ..Default::default()
     };
 
-    // Compute stepsizes for encoding
     Tcd::calc_explicit_stepsizes(&mut tcp, prec);
 
     let cp = CodingParameters {
@@ -154,11 +152,9 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
         ..CodingParameters::new_encoder()
     };
 
-    // Encode tile data via TCD pipeline
     let mut tcd = Tcd::new(true);
     tcd.init_tile(0, image, &cp, &tcp, true)?;
 
-    // Copy image pixel data to tile components
     for (compno, comp) in image.comps.iter().enumerate() {
         if compno < tcd.tile.comps.len() {
             let tile_comp = &mut tcd.tile.comps[compno];
@@ -170,7 +166,6 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
         }
     }
 
-    // Encode: DC shift → MCT → DWT → T1 → makelayer → T2
     let mut buf_size = (w as usize)
         .checked_mul(h as usize)
         .and_then(|v| v.checked_mul(image.comps.len()))
@@ -189,7 +184,6 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
         }
     };
 
-    // Write J2K codestream
     let mut j2k_enc = J2kEncoder::new();
     j2k_enc.write_header(image, &cp, &tcp)?;
     j2k_enc.write_tile(0, &tile_buf[..tile_len], 0, 1)?;
@@ -205,6 +199,14 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
             Ok(jp2_enc.finalize())
         }
     }
+}
+
+/// Encode an image to JPEG 2000 format with default options (5-3 lossless, single resolution).
+///
+/// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
+/// For J2K, returns raw codestream.
+pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
+    encode_with_params(image, format, &EncodeOptions::default())
 }
 
 /// Detect codec format from the first bytes of data.

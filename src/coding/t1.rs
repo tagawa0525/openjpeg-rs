@@ -696,7 +696,8 @@ impl T1 {
         bpno_plus_one: i32,
         cblksty: u32,
     ) {
-        let one = 1i32 << (bpno_plus_one - 1);
+        // C: one = 1 << bpno (where bpno is actually bpno_plus_one)
+        let one = 1i32 << bpno_plus_one;
         let half = one >> 1;
         let oneplushalf = one | half;
         let w = self.w as usize;
@@ -744,7 +745,7 @@ impl T1 {
         bpno_plus_one: i32,
         cblksty: u32,
     ) {
-        let one = 1i32 << (bpno_plus_one - 1);
+        let one = 1i32 << bpno_plus_one;
         let half = one >> 1;
         let oneplushalf = one | half;
         let w = self.w as usize;
@@ -837,7 +838,7 @@ impl T1 {
 
     /// Refinement pass decoder, MQ mode (C: opj_t1_dec_refpass_mqc).
     pub fn dec_refpass_mqc(&mut self, mqc: &mut crate::coding::mqc::Mqc, bpno_plus_one: i32) {
-        let one = 1i32 << (bpno_plus_one - 1);
+        let one = 1i32 << bpno_plus_one;
         let poshalf = one >> 1;
         let w = self.w as usize;
         let h = self.h as usize;
@@ -875,7 +876,7 @@ impl T1 {
 
     /// Refinement pass decoder, RAW mode (C: opj_t1_dec_refpass_raw).
     pub fn dec_refpass_raw(&mut self, mqc: &mut crate::coding::mqc::Mqc, bpno_plus_one: i32) {
-        let one = 1i32 << (bpno_plus_one - 1);
+        let one = 1i32 << bpno_plus_one;
         let poshalf = one >> 1;
         let w = self.w as usize;
         let h = self.h as usize;
@@ -963,7 +964,7 @@ impl T1 {
         bpno_plus_one: i32,
         cblksty: u32,
     ) {
-        let one = 1i32 << (bpno_plus_one - 1);
+        let one = 1i32 << bpno_plus_one;
         let half = one >> 1;
         let oneplushalf = one | half;
         let w = self.w as usize;
@@ -2394,7 +2395,9 @@ mod tests {
         }
 
         // Verify: (col=1, row=0) in row-major = data[0*4 + 1] = data[1]
-        let oneplushalf = (1i32 << bpno) | (1i32 << (bpno - 1));
+        // Decoder uses one = 1 << bpno_plus_one (2x scale), so
+        // oneplushalf = (1 << (bpno+1)) | (1 << bpno).
+        let oneplushalf = (1i32 << (bpno + 1)) | (1i32 << bpno);
         assert_eq!(dec.data[1], oneplushalf);
     }
 
@@ -2455,8 +2458,9 @@ mod tests {
         dec.set_orient(0);
 
         // Decoder row-major: (col=1, row=0) = data[0*4 + 1] = data[1]
-        // Set initial decoded value as oneplushalf from the higher bitplane
-        let one_high = 1i32 << higher_bpno;
+        // Set initial decoded value as oneplushalf from the higher bitplane.
+        // Decoder uses 2x scale: one = 1 << (bpno+1).
+        let one_high = 1i32 << (higher_bpno + 1);
         let half_high = one_high >> 1;
         let oneplushalf_high = one_high | half_high;
         dec.data[1] = oneplushalf_high; // positive
@@ -2475,7 +2479,8 @@ mod tests {
         }
 
         // Refinement should add poshalf (since bit=1 and data>=0, v=1 ^ 0 = 1 → +poshalf)
-        let poshalf = 1i32 << (refine_bpno - 1);
+        // At 2x scale: poshalf = 1 << refine_bpno (was 1 << (refine_bpno - 1))
+        let poshalf = 1i32 << refine_bpno;
         let expected = oneplushalf_high + poshalf;
         assert_eq!(
             dec.data[1], expected,
@@ -2542,7 +2547,8 @@ mod tests {
         }
 
         // Verify: decoder row-major layout
-        let oneplushalf = (1i32 << bpno) | (1i32 << (bpno - 1));
+        // Decoder uses 2x scale: oneplushalf = (1 << (bpno+1)) | (1 << bpno)
+        let oneplushalf = (1i32 << (bpno + 1)) | (1i32 << bpno);
 
         // (col=0, row=0) in row-major = data[0*4 + 0] = data[0]
         assert_eq!(
@@ -2715,25 +2721,27 @@ mod tests {
 
         // 6. Convert decoded row-major data back.
         //    Decoder data is in row-major: data[r * w + c].
-        //    The encoder shifts input by FRACBITS and computes numbps by subtracting
-        //    FRACBITS, so the decoder output is at the original coefficient scale
-        //    (not shifted by FRACBITS). Each decoded value has "one plus half" rounding
-        //    at the least significant coded bitplane.
-        // 7. Verify decoded values are close to original (within ±2 tolerance
-        //    accounting for encode-side SMR rounding and decode-side half-bit midpoint).
-        let tolerance = 2i32;
+        //    The T1 decoder now reconstructs at 2x scale (one = 1 << bpno_plus_one),
+        //    so raw decoded values are 2x the original coefficients.
+        //    copy_decoded_cblks_to_data divides by 2 for reversible mode to recover
+        //    original scale, but decode_cblk here returns raw 2x values.
+        // 7. Verify decoded values are close to 2x original (within ±4 tolerance,
+        //    accounting for encode-side SMR rounding and decode-side half-bit midpoint
+        //    at 2x scale).
+        let tolerance = 4i32;
         for r in 0..h as usize {
             for c in 0..w as usize {
                 let decoded = dec.data[r * w as usize + c];
-                let expected = original[r * w as usize + c];
+                let expected = original[r * w as usize + c] * 2;
                 let diff = (decoded - expected).abs();
                 assert!(
                     diff <= tolerance,
-                    "coefficient ({},{}) mismatch: decoded={}, expected={}, diff={}, tolerance={}",
+                    "coefficient ({},{}) mismatch: decoded={}, expected={} (2x original {}), diff={}, tolerance={}",
                     c,
                     r,
                     decoded,
                     expected,
+                    original[r * w as usize + c],
                     diff,
                     tolerance,
                 );
@@ -3048,11 +3056,13 @@ mod tests {
         {
             let decoded = cblks[0].decoded_data.as_ref().unwrap();
             assert_eq!(decoded.len(), 16);
-            // Verify roundtrip within tolerance (±2 for rounding)
+            // T1 decoder now produces 2x-scale raw values. Verify roundtrip
+            // within tolerance (±4 for rounding at 2x scale).
             for (i, (&dec, &orig)) in decoded.iter().zip(original_data.iter()).enumerate() {
+                let expected_2x = orig * 2;
                 assert!(
-                    (dec - orig).abs() <= 2,
-                    "sample {i}: decoded={dec}, original={orig}"
+                    (dec - expected_2x).abs() <= 4,
+                    "sample {i}: decoded={dec}, expected_2x={expected_2x} (original={orig})"
                 );
             }
         } else {
