@@ -1021,6 +1021,15 @@ impl Tcd {
                 let comp = &self.tile.comps[0];
                 ((comp.x1 - comp.x0) * (comp.y1 - comp.y0)) as usize
             };
+            // Validate all 3 components have sufficient buffer size
+            for ci in 0..3 {
+                if self.tile.comps[ci].data.len() < samples {
+                    return Err(Error::InvalidInput(format!(
+                        "MCT encode: component {ci} has {} samples, need {samples}",
+                        self.tile.comps[ci].data.len()
+                    )));
+                }
+            }
             let qmfbid = tcp.tccps.first().map(|t| t.qmfbid).unwrap_or(1);
 
             if tcp.mct == 1 {
