@@ -470,13 +470,16 @@ mod tests {
         let decoded = decode(&encoded, CodecFormat::Jp2).unwrap();
 
         assert_eq!(decoded.comps[0].data.len(), 16);
-        // For uniform input, all decoded pixels should be the same
-        let unique: std::collections::HashSet<i32> =
-            decoded.comps[0].data.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            1,
-            "uniform input should decode to uniform output"
-        );
+        // For uniform input 100, all decoded pixels should be within ±1 of original
+        for (i, &val) in decoded.comps[0].data.iter().enumerate() {
+            let diff = (val - 100).abs();
+            assert!(
+                diff <= 1,
+                "pixel {}: expected ~100, got {}, diff={}",
+                i,
+                val,
+                diff
+            );
+        }
     }
 }

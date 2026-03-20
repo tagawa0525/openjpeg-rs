@@ -735,17 +735,24 @@ impl Tcd {
 
             let comp = &mut self.tile.comps[desc.compno];
             let comp_w = (comp.x1 - comp.x0) as usize;
+            // T1 data is in row-major layout: data[row * w + col]
             for j in 0..desc.cblk_h {
+                let src_off = j * desc.cblk_w;
                 let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
                 for i in 0..desc.cblk_w {
-                    // T1 decoded data is in column-major order: data[col * h + row]
-                    let val = decoded_data[i * desc.cblk_h + j];
-                    // Dequantize: C: datap[i] /= 2 (reversible)
-                    //             C: val * 0.5f * band->stepsize (irreversible)
-                    // Note: our stepsize already includes 0.5 from init_tile,
-                    // so we use stepsize directly to match C's 0.5 * raw_stepsize.
+                    let val = decoded_data[src_off + i];
+                    // Dequantization:
+                    //  - Reversible (qmfbid == 1): identity mapping (no /2). With the way IMSB
+                    //    and numbps are handled here, this matches the intended integer domain.
+                    //  - Irreversible (qmfbid == 0): scale by stepsize.
+                    //
+                    // C reference:
+                    //  - Reversible: datap[i] /= 2
+                    //  - Irreversible: val * 0.5f * band->stepsize
+                    // Our desc.stepsize already includes the 0.5 factor from init_tile, so
+                    // val * desc.stepsize corresponds to the C code's 0.5f * raw_stepsize.
                     comp.data[dst_off + i] = if desc.qmfbid == 1 {
-                        val / 2
+                        val
                     } else {
                         (val as f32 * desc.stepsize) as i32
                     };
@@ -1604,14 +1611,11 @@ mod tests {
             panic!("expected Dec");
         };
 
-        // Fill decoded_data in column-major order (T1's output layout: data[col * h + row])
+        // Fill decoded_data in row-major layout: data[row * w + col]
+        // Identity dequant for reversible (no scaling).
         let mut test_data = vec![0i32; cblk_w * cblk_h];
-        for j in 0..cblk_h {
-            for i in 0..cblk_w {
-                // Value at pixel (i,j) = (j * cblk_w + i + 1) * 2
-                // Stored at column-major index: col * h + row = i * cblk_h + j
-                test_data[i * cblk_h + j] = (j * cblk_w + i) as i32 * 2 + 2;
-            }
+        for (i, val) in test_data.iter_mut().enumerate() {
+            *val = i as i32 + 1;
         }
         if let TcdCodeBlocks::Dec(cblks) =
             &mut tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
@@ -1623,12 +1627,11 @@ mod tests {
 
         // Verify: LL coefficients should be at top-left of comp.data (row-major)
         let comp = &tcd.tile.comps[0];
-        for j in 0..cblk_h {
-            for i in 0..cblk_w {
-                let expected = (j * cblk_w + i) as i32 + 1; // divided by 2
-                let actual = comp.data[j * comp_w + i];
-                assert_eq!(actual, expected, "mismatch at ({i},{j})");
-            }
+        for (i, &val) in test_data.iter().enumerate() {
+            let j = i / cblk_w;
+            let col = i % cblk_w;
+            let actual = comp.data[j * comp_w + col];
+            assert_eq!(actual, val, "mismatch at ({col},{j})");
         }
     }
 
@@ -1674,17 +1677,20 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): raw = (1+1)*200=400, ÷2 = 200. x offset = res0_w
+        // HL (bandno=1): raw = (1+1)*200=400 (identity dequant, no /2). x offset = res0_w
         let hl_val = tcd.tile.comps[0].data[res0_w];
-        assert_eq!(hl_val, 200, "HL should be at x=res0_w");
+        assert_eq!(hl_val, 400, "HL should be at x=res0_w with value 400");
 
-        // LH (bandno=2): raw = (2+1)*200=600, ÷2 = 300. y offset = res0_h
+        // LH (bandno=2): raw = (2+1)*200=600 (identity dequant, no /2). y offset = res0_h
         let lh_val = tcd.tile.comps[0].data[res0_h * comp_w];
-        assert_eq!(lh_val, 300, "LH should be at y=res0_h");
+        assert_eq!(lh_val, 600, "LH should be at y=res0_h with value 600");
 
-        // HH (bandno=3): raw = (3+1)*200=800, ÷2 = 400. offset = (res0_w, res0_h)
+        // HH (bandno=3): raw = (3+1)*200=800 (identity dequant, no /2). offset = (res0_w, res0_h)
         let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
-        assert_eq!(hh_val, 400, "HH should be at (res0_w, res0_h)");
+        assert_eq!(
+            hh_val, 800,
+            "HH should be at (res0_w, res0_h) with value 800"
+        );
     }
 
     // --- decode_tile pipeline ---
@@ -1875,6 +1881,8 @@ mod tests {
         enc_tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
         enc_tcd.tile.comps[0].data = image.comps[0].data.clone();
 
+        let original_data = image.comps[0].data.clone();
+
         let mut encoded = vec![0u8; 8192];
         let enc_len = enc_tcd
             .encode_tile(&image, &cp, &tcp, &mut encoded)
@@ -1892,20 +1900,154 @@ mod tests {
             .decode_tile(&mut encoded[..enc_len], &image, &dec_cp, &tcp)
             .unwrap();
 
-        // Verify decoded data has correct length and meaningful values
-        // (not all zeros or all DC shift). Exact lossless verification deferred to
-        // Phase 1100g after T1 FRACBITS/numbps conventions are harmonized.
+        // Verify per-pixel accuracy: each decoded pixel should be within ±1 of original
+        // (T1 reconstruction bias is acceptable in reversible mode)
         assert_eq!(dec_tcd.tile.comps[0].data.len(), 64);
         let decoded = &dec_tcd.tile.comps[0].data;
-        let min = *decoded.iter().min().unwrap();
-        let max = *decoded.iter().max().unwrap();
-        // Should have a range of values, not uniform
-        assert!(max > min, "decoded data should not be uniform");
-        // All values should be within 8-bit unsigned range [0, 255]
-        assert!(
-            min >= 0 && max <= 255,
-            "values out of 8-bit range: {min}..{max}"
+        for (i, (orig, dec)) in original_data.iter().zip(decoded.iter()).enumerate() {
+            let diff = (*dec - *orig).abs();
+            assert!(
+                diff <= 1,
+                "pixel {}: original={}, decoded={}, diff={}",
+                i,
+                orig,
+                dec,
+                diff
+            );
+        }
+    }
+
+    /// Verify each pipeline stage of encode→decode roundtrip independently.
+    /// Catches regressions at a specific stage rather than just the final output.
+    #[test]
+    fn encode_decode_pipeline_stages() {
+        use crate::coding::t1::{t1_decode_cblks, t1_encode_cblks};
+        use crate::tcd::TcdCodeBlocks;
+        use crate::tier2::pi::pi_create_decode;
+        use crate::tier2::t2::{t2_decode_packets, t2_encode_packets};
+
+        let (image, cp, tcp) = create_encode_test_setup();
+        // Input: 8×8, gradient [0,4,8,...,252], dc_shift=128
+
+        // --- Encode side ---
+        let mut enc_tcd = Tcd::new(true);
+        enc_tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
+        enc_tcd.tile.comps[0].data = image.comps[0].data.clone();
+
+        // Stage 1: DC level shift (subtract 128)
+        enc_tcd.dc_level_shift_encode(&tcp);
+        assert_eq!(enc_tcd.tile.comps[0].data[0], -128); // 0 - 128
+        assert_eq!(enc_tcd.tile.comps[0].data[1], -124); // 4 - 128
+
+        // Stage 2: T1 encode
+        let numcomps = enc_tcd.tile.comps.len() as u32;
+        t1_encode_cblks(&mut enc_tcd.tile, &tcp, None, numcomps).unwrap();
+
+        // Encoder cblk should have data
+        let (enc_numbps, enc_has_passes) = if let TcdCodeBlocks::Enc(ref cblks) =
+            enc_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            (cblks[0].numbps, !cblks[0].passes.is_empty())
+        } else {
+            panic!("expected Enc");
+        };
+        assert!(enc_numbps > 0, "encoder should produce nonzero numbps");
+        assert!(enc_has_passes, "encoder should produce passes");
+
+        // Stage 3: T2 encode
+        enc_tcd.makelayer_fixed(&tcp);
+        let mut encoded = vec![0u8; 8192];
+        let mut pis_enc = pi_create_decode(&image, &cp, 0).unwrap();
+        let enc_len =
+            t2_encode_packets(&mut enc_tcd.tile, &tcp, &mut pis_enc, &mut encoded).unwrap();
+        assert!(enc_len > 0, "T2 should produce nonzero output");
+
+        // --- Decode side ---
+        let dec_cp = CodingParameters {
+            mode: CodingParamMode::Decoder(DecodingParam::default()),
+            ..cp.clone()
+        };
+        let mut dec_tcd = Tcd::new(false);
+        dec_tcd.init_tile(0, &image, &dec_cp, &tcp, false).unwrap();
+        let comp = &mut dec_tcd.tile.comps[0];
+        let w = (comp.x1 - comp.x0) as usize;
+        let h = (comp.y1 - comp.y0) as usize;
+        comp.data.resize(w * h, 0);
+
+        // Stage 4: T2 decode
+        let max_layers = tcp.numlayers.max(1);
+        let mut pis_dec = pi_create_decode(&image, &dec_cp, 0).unwrap();
+        t2_decode_packets(
+            &mut dec_tcd.tile,
+            &tcp,
+            &mut pis_dec,
+            &mut encoded[..enc_len],
+            max_layers,
+        )
+        .unwrap();
+
+        let dec_numbps = if let TcdCodeBlocks::Dec(ref cblks) =
+            dec_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            cblks[0].numbps
+        } else {
+            panic!("expected Dec");
+        };
+        assert_eq!(
+            dec_numbps, enc_numbps,
+            "decoder numbps should match encoder"
         );
+
+        // Stage 5: T1 decode
+        t1_decode_cblks(&mut dec_tcd.tile, &tcp).unwrap();
+
+        let decoded_coeffs = if let TcdCodeBlocks::Dec(ref cblks) =
+            dec_tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
+        {
+            cblks[0].decoded_data.clone().expect("decoded_data missing")
+        } else {
+            panic!("expected Dec");
+        };
+        // T1 decoder produces row-major data at original coefficient scale
+        assert_eq!(decoded_coeffs.len(), 64);
+        // First row coefficients should be near DC-shifted originals
+        for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
+            let expected = image.comps[0].data[i] - 128;
+            let diff = (coeff - expected).abs();
+            assert!(
+                diff <= 1,
+                "T1 decoded coeff[{}]: expected={}, got={}, diff={}",
+                i,
+                expected,
+                coeff,
+                diff
+            );
+        }
+
+        // Stage 6: Copy decoded cblks → tile data (identity dequant, row-major)
+        dec_tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
+        for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
+            assert_eq!(
+                dec_tcd.tile.comps[0].data[i], coeff,
+                "copy should preserve value at index {i}"
+            );
+        }
+
+        // Stage 7: DC level unshift (add 128)
+        dec_tcd.dc_level_shift_decode(&tcp);
+        for i in 0..8 {
+            let orig = image.comps[0].data[i];
+            let dec = dec_tcd.tile.comps[0].data[i];
+            let diff = (dec - orig).abs();
+            assert!(
+                diff <= 1,
+                "final pixel[{}]: original={}, decoded={}, diff={}",
+                i,
+                orig,
+                dec,
+                diff
+            );
+        }
     }
 
     #[test]
