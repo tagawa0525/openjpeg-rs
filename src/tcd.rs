@@ -741,11 +741,16 @@ impl Tcd {
                 let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
                 for i in 0..desc.cblk_w {
                     let val = decoded_data[src_off + i];
-                    // Dequantize: C: datap[i] /= 2 (reversible) — but with correct IMSB,
-                    //             numbps match so identity is correct.
-                    //             C: val * 0.5f * band->stepsize (irreversible)
-                    // Note: our stepsize already includes 0.5 from init_tile,
-                    // so we use stepsize directly to match C's 0.5 * raw_stepsize.
+                    // Dequantization:
+                    //  - Reversible (qmfbid == 1): identity mapping (no /2). With the way IMSB
+                    //    and numbps are handled here, this matches the intended integer domain.
+                    //  - Irreversible (qmfbid == 0): scale by stepsize.
+                    //
+                    // C reference:
+                    //  - Reversible: datap[i] /= 2
+                    //  - Irreversible: val * 0.5f * band->stepsize
+                    // Our desc.stepsize already includes the 0.5 factor from init_tile, so
+                    // val * desc.stepsize corresponds to the C code's 0.5f * raw_stepsize.
                     comp.data[dst_off + i] = if desc.qmfbid == 1 {
                         val
                     } else {
