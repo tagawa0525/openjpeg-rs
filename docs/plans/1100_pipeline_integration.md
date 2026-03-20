@@ -1,6 +1,6 @@
 # Phase 1100: パイプライン統合（復号→符号化）
 
-Status: IN_PROGRESS (1100a-g done, multi-res DWT and 9-7 quantization remaining)
+Status: IN_PROGRESS
 
 ## Context
 
