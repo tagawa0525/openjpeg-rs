@@ -147,7 +147,6 @@ fn roundtrip_53_lossless_edge_values() {
 }
 
 #[test]
-#[ignore = "multi-resolution DWT encode/decode pipeline not yet integrated"]
 fn roundtrip_53_lossless_multi_resolution() {
     let image = build_gray_image(32, 32, |i| (i % 256) as i32);
     let options = EncodeOptions {
