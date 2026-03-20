@@ -741,18 +741,13 @@ impl Tcd {
                 let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
                 for i in 0..desc.cblk_w {
                     let val = decoded_data[src_off + i];
-                    // Dequantization:
-                    //  - Reversible (qmfbid == 1): identity mapping (no /2). With the way IMSB
-                    //    and numbps are handled here, this matches the intended integer domain.
+                    // Dequantization (C: opj_t1_decode_cblks):
+                    //  - Reversible (qmfbid == 1): val / 2. The T1 decoder reconstructs
+                    //    at 2x scale (one = 1 << bpno_plus_one), so /2 recovers the
+                    //    original coefficient value. This achieves lossless reconstruction.
                     //  - Irreversible (qmfbid == 0): scale by stepsize.
-                    //
-                    // C reference:
-                    //  - Reversible: datap[i] /= 2
-                    //  - Irreversible: val * 0.5f * band->stepsize
-                    // Our desc.stepsize already includes the 0.5 factor from init_tile, so
-                    // val * desc.stepsize corresponds to the C code's 0.5f * raw_stepsize.
                     comp.data[dst_off + i] = if desc.qmfbid == 1 {
-                        val
+                        val / 2
                     } else {
                         (val as f32 * desc.stepsize) as i32
                     };
@@ -1612,10 +1607,11 @@ mod tests {
         };
 
         // Fill decoded_data in row-major layout: data[row * w + col]
-        // Identity dequant for reversible (no scaling).
+        // T1 decoder produces 2x-scale values. For reversible mode (qmfbid==1),
+        // copy_decoded_cblks_to_data divides by 2.
         let mut test_data = vec![0i32; cblk_w * cblk_h];
         for (i, val) in test_data.iter_mut().enumerate() {
-            *val = i as i32 + 1;
+            *val = (i as i32 + 1) * 2; // 2x scale (as T1 decoder would produce)
         }
         if let TcdCodeBlocks::Dec(cblks) =
             &mut tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
@@ -1625,13 +1621,14 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // Verify: LL coefficients should be at top-left of comp.data (row-major)
+        // Verify: LL coefficients should be at top-left of comp.data (row-major).
+        // Values are divided by 2 during copy for reversible mode.
         let comp = &tcd.tile.comps[0];
         for (i, &val) in test_data.iter().enumerate() {
             let j = i / cblk_w;
             let col = i % cblk_w;
             let actual = comp.data[j * comp_w + col];
-            assert_eq!(actual, val, "mismatch at ({col},{j})");
+            assert_eq!(actual, val / 2, "mismatch at ({col},{j})");
         }
     }
 
@@ -1677,19 +1674,20 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): raw = (1+1)*200=400 (identity dequant, no /2). x offset = res0_w
+        // For reversible mode (qmfbid==1), copy_decoded_cblks_to_data divides by 2.
+        // HL (bandno=1): raw = (1+1)*200=400, after /2 = 200. x offset = res0_w
         let hl_val = tcd.tile.comps[0].data[res0_w];
-        assert_eq!(hl_val, 400, "HL should be at x=res0_w with value 400");
+        assert_eq!(hl_val, 200, "HL should be at x=res0_w with value 200");
 
-        // LH (bandno=2): raw = (2+1)*200=600 (identity dequant, no /2). y offset = res0_h
+        // LH (bandno=2): raw = (2+1)*200=600, after /2 = 300. y offset = res0_h
         let lh_val = tcd.tile.comps[0].data[res0_h * comp_w];
-        assert_eq!(lh_val, 600, "LH should be at y=res0_h with value 600");
+        assert_eq!(lh_val, 300, "LH should be at y=res0_h with value 300");
 
-        // HH (bandno=3): raw = (3+1)*200=800 (identity dequant, no /2). offset = (res0_w, res0_h)
+        // HH (bandno=3): raw = (3+1)*200=800, after /2 = 400. offset = (res0_w, res0_h)
         let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
         assert_eq!(
-            hh_val, 800,
-            "HH should be at (res0_w, res0_h) with value 800"
+            hh_val, 400,
+            "HH should be at (res0_w, res0_h) with value 400"
         );
     }
 
@@ -2008,28 +2006,30 @@ mod tests {
         } else {
             panic!("expected Dec");
         };
-        // T1 decoder produces row-major data at original coefficient scale
+        // T1 decoder now produces 2x-scale row-major data
         assert_eq!(decoded_coeffs.len(), 64);
-        // First row coefficients should be near DC-shifted originals
+        // First row coefficients should be near 2x DC-shifted originals
         for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
-            let expected = image.comps[0].data[i] - 128;
-            let diff = (coeff - expected).abs();
+            let expected_2x = (image.comps[0].data[i] - 128) * 2;
+            let diff = (coeff - expected_2x).abs();
             assert!(
-                diff <= 1,
-                "T1 decoded coeff[{}]: expected={}, got={}, diff={}",
+                diff <= 2,
+                "T1 decoded coeff[{}]: expected_2x={}, got={}, diff={}",
                 i,
-                expected,
+                expected_2x,
                 coeff,
                 diff
             );
         }
 
-        // Stage 6: Copy decoded cblks → tile data (identity dequant, row-major)
+        // Stage 6: Copy decoded cblks → tile data (reversible: /2 dequant, row-major)
         dec_tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
         for (i, &coeff) in decoded_coeffs[..8].iter().enumerate() {
+            // copy_decoded_cblks_to_data divides by 2 for reversible mode
             assert_eq!(
-                dec_tcd.tile.comps[0].data[i], coeff,
-                "copy should preserve value at index {i}"
+                dec_tcd.tile.comps[0].data[i],
+                coeff / 2,
+                "copy should divide by 2 at index {i}"
             );
         }
 

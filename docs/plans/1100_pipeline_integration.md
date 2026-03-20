@@ -1,6 +1,6 @@
 # Phase 1100: パイプライン統合（復号→符号化）
 
-Status: IN_PROGRESS (1100a-c done, 1100d-g remaining)
+Status: IN_PROGRESS
 
 ## Context
 
