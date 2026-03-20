@@ -58,13 +58,43 @@ pub fn decode_owned(data: Vec<u8>, format: CodecFormat) -> Result<Image> {
     }
 }
 
-/// Encode an image to JPEG 2000 format.
+/// Encoding options for JPEG 2000 compression.
+#[derive(Debug, Clone)]
+pub struct EncodeOptions {
+    /// Wavelet filter: 0 = 9-7 irreversible, 1 = 5-3 reversible. Default: 1.
+    pub qmfbid: u32,
+    /// Number of resolution levels (1 = no DWT). Default: 1.
+    pub numresolutions: u32,
+    /// Multi-component transform: 0 = none, 1 = RCT(5-3)/ICT(9-7). Default: 0.
+    pub mct: u32,
+}
+
+impl Default for EncodeOptions {
+    fn default() -> Self {
+        Self {
+            qmfbid: 1,
+            numresolutions: 1,
+            mct: 0,
+        }
+    }
+}
+
+/// Encode an image to JPEG 2000 format with custom options.
 ///
 /// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
 /// For J2K, returns raw codestream.
+pub fn encode_with_params(
+    _image: &Image,
+    _format: CodecFormat,
+    _options: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    Err(Error::InvalidInput("not yet implemented".into()))
+}
+
+/// Encode an image to JPEG 2000 format with default options (5-3 lossless, single resolution).
 ///
-/// Currently produces a minimal J2K codestream (header + empty tiles).
-/// Full T1/T2 encoding is handled by J2kEncoder when available.
+/// Returns the encoded bytes. For JP2, wraps in JP2 file format boxes.
+/// For J2K, returns raw codestream.
 pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
     use crate::j2k::write::J2kEncoder;
