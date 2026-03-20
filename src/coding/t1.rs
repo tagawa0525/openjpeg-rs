@@ -1506,8 +1506,9 @@ fn decode_one_cblk(job: &CblkDecodeJob) -> Result<Vec<i32>> {
 
 /// Encode job for one codeblock.
 struct CblkEncodeJob {
-    /// Coefficient data in zigzag layout, shifted by T1_NMSEDEC_FRACBITS.
-    zigzag_data: Vec<i32>,
+    /// Coefficient data in stripe-column layout, shifted by T1_NMSEDEC_FRACBITS.
+    /// Stripe-column: for each 4-row stripe, for each column, sequential rows.
+    t1_data: Vec<i32>,
     /// Codeblock dimensions.
     w: u32,
     h: u32,
@@ -1546,7 +1547,7 @@ struct CblkEncodeResult {
 fn encode_one_cblk(job: &CblkEncodeJob) -> Result<CblkEncodeResult> {
     let mut t1 = T1::new(true);
     t1.allocate_buffers(job.w, job.h)?;
-    t1.data[..job.zigzag_data.len()].copy_from_slice(&job.zigzag_data);
+    t1.data[..job.t1_data.len()].copy_from_slice(&job.t1_data);
 
     let mut enc_buf = vec![0u8; (job.w * job.h * 4 + 1024) as usize];
     let (passes, _cumwmsedec) = t1.encode_cblk(
@@ -1735,7 +1736,7 @@ pub fn t1_encode_cblks(
                             let cblk_y0 = (cblk.y0 - comp.y0) as usize;
                             let h = cblk_h as usize;
                             let w = cblk_w as usize;
-                            let mut zigzag_data = vec![0i32; w * h];
+                            let mut t1_data = vec![0i32; w * h];
                             let mut dst_idx = 0;
                             for stripe_start in (0..h).step_by(4) {
                                 let stripe_h = 4.min(h - stripe_start);
@@ -1748,7 +1749,7 @@ pub fn t1_encode_cblks(
                                         } else {
                                             0
                                         };
-                                        zigzag_data[dst_idx] = val << T1_NMSEDEC_FRACBITS;
+                                        t1_data[dst_idx] = val << T1_NMSEDEC_FRACBITS;
                                         dst_idx += 1;
                                     }
                                 }
@@ -1768,7 +1769,7 @@ pub fn t1_encode_cblks(
                             };
 
                             jobs.push(CblkEncodeJob {
-                                zigzag_data,
+                                t1_data,
                                 w: cblk_w,
                                 h: cblk_h,
                                 orient,
