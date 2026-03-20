@@ -130,8 +130,23 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     }
 
     // Encode: DC shift → MCT → DWT → T1 → makelayer → T2
-    let mut tile_buf = vec![0u8; w as usize * h as usize * image.comps.len() * 4 + 4096];
-    let tile_len = tcd.encode_tile(image, &cp, &tcp, &mut tile_buf)?;
+    let mut buf_size = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|v| v.checked_mul(image.comps.len()))
+        .and_then(|v| v.checked_mul(4))
+        .and_then(|v| v.checked_add(4096))
+        .ok_or(Error::BufferTooSmall)?;
+    let mut tile_buf = vec![0u8; buf_size];
+    let tile_len = loop {
+        match tcd.encode_tile(image, &cp, &tcp, &mut tile_buf) {
+            Ok(len) => break len,
+            Err(Error::BufferTooSmall) => {
+                buf_size = buf_size.checked_mul(2).ok_or(Error::BufferTooSmall)?;
+                tile_buf = vec![0u8; buf_size];
+            }
+            Err(e) => return Err(e),
+        }
+    };
 
     // Write J2K codestream
     let mut j2k_enc = J2kEncoder::new();
