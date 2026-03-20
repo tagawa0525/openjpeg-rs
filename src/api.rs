@@ -352,4 +352,73 @@ mod tests {
         assert_eq!(decoded.comps.len(), 3);
         assert_eq!(decoded.color_space, ColorSpace::Srgb);
     }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_j2k_produces_decodable_pixels() {
+        // Encode a grayscale image with pixel data, then decode and verify
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 8,
+            h: 8,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x0 = 0;
+        image.y0 = 0;
+        image.x1 = 8;
+        image.y1 = 8;
+        // Fill with gradient
+        image.comps[0].data = (0..64).map(|i| i * 4).collect();
+
+        let encoded = encode(&image, CodecFormat::J2k).unwrap();
+        assert!(encoded.len() > 10, "encoded data should be non-trivial");
+
+        let decoded = decode(&encoded, CodecFormat::J2k).unwrap();
+        assert_eq!(decoded.comps.len(), 1);
+        assert_eq!(decoded.comps[0].data.len(), 64);
+
+        // Decoded pixels should have a range (not all same value)
+        let min = *decoded.comps[0].data.iter().min().unwrap();
+        let max = *decoded.comps[0].data.iter().max().unwrap();
+        assert!(max > min, "decoded pixels should vary");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn encode_decode_roundtrip_jp2_with_pixels() {
+        let params = vec![ImageCompParam {
+            dx: 1,
+            dy: 1,
+            w: 4,
+            h: 4,
+            x0: 0,
+            y0: 0,
+            prec: 8,
+            sgnd: false,
+        }];
+        let mut image = Image::new(&params, ColorSpace::Gray);
+        image.x0 = 0;
+        image.y0 = 0;
+        image.x1 = 4;
+        image.y1 = 4;
+        image.comps[0].data = vec![100; 16]; // uniform pixel value
+
+        let encoded = encode(&image, CodecFormat::Jp2).unwrap();
+        let decoded = decode(&encoded, CodecFormat::Jp2).unwrap();
+
+        assert_eq!(decoded.comps[0].data.len(), 16);
+        // For uniform input, all decoded pixels should be the same
+        let unique: std::collections::HashSet<i32> =
+            decoded.comps[0].data.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "uniform input should decode to uniform output"
+        );
+    }
 }
