@@ -1733,8 +1733,24 @@ pub fn t1_encode_cblks(
                             // Copy from tile component (row-major) to stripe-column layout
                             // matching the encoder's scan order: for each 4-row stripe,
                             // for each column, sequential rows within the stripe.
-                            let cblk_x0 = (cblk.x0 - comp.x0) as usize;
-                            let cblk_y0 = (cblk.y0 - comp.y0) as usize;
+                            //
+                            // Subband offset: for HL/LH/HH bands at resno > 0,
+                            // shift by previous resolution dimensions to reach the
+                            // correct subband position in the DWT-transformed buffer.
+                            // (C: t1.c L2237-2244)
+                            let mut x = (cblk.x0 - band.x0) as usize;
+                            let mut y = (cblk.y0 - band.y0) as usize;
+                            if resno > 0 {
+                                let pres = &comp.resolutions[resno - 1];
+                                if band.bandno & 1 != 0 {
+                                    x += (pres.x1 - pres.x0) as usize;
+                                }
+                                if band.bandno & 2 != 0 {
+                                    y += (pres.y1 - pres.y0) as usize;
+                                }
+                            }
+                            let cblk_x0 = x;
+                            let cblk_y0 = y;
                             let h = cblk_h as usize;
                             let w = cblk_w as usize;
                             let mut t1_data = vec![0i32; w * h];
