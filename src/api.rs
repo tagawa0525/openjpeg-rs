@@ -68,41 +68,75 @@ pub fn decode_owned(data: Vec<u8>, format: CodecFormat) -> Result<Image> {
 pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
     use crate::j2k::write::J2kEncoder;
+    use crate::tcd::Tcd;
 
-    // Build minimal coding parameters from image
+    // Build coding parameters from image
     let w = image.x1.saturating_sub(image.x0);
     let h = image.y1.saturating_sub(image.y0);
     if w == 0 || h == 0 || image.comps.is_empty() {
         return Err(Error::InvalidInput("Invalid image for encoding".into()));
     }
 
+    let prec = image.comps[0].prec;
+
     let tccps: Vec<_> = image
         .comps
         .iter()
-        .map(|_| TileCompCodingParameters {
-            numresolutions: 1,
-            cblkw: 6,
-            cblkh: 6,
-            qmfbid: 1,
-            ..Default::default()
+        .map(|comp| {
+            let comp_dc = if !comp.sgnd && comp.prec <= 31 {
+                1i32 << (comp.prec - 1)
+            } else {
+                0
+            };
+            TileCompCodingParameters {
+                numresolutions: 1,
+                cblkw: 6,
+                cblkh: 6,
+                qmfbid: 1,
+                m_dc_level_shift: comp_dc,
+                ..Default::default()
+            }
         })
         .collect();
-    let tcp = TileCodingParameters {
+    let mut tcp = TileCodingParameters {
         numlayers: 1,
         tccps,
         ..Default::default()
     };
+
+    // Compute stepsizes for encoding
+    Tcd::calc_explicit_stepsizes(&mut tcp, prec);
+
     let cp = CodingParameters {
+        tx0: image.x0,
+        ty0: image.y0,
         tdx: w,
         tdy: h,
         tw: 1,
         th: 1,
+        tcps: vec![tcp.clone()],
         ..CodingParameters::new_encoder()
     };
 
+    // Encode tile data via TCD pipeline
+    let mut tcd = Tcd::new(true);
+    tcd.init_tile(0, image, &cp, &tcp, true)?;
+
+    // Copy image pixel data to tile components
+    for (compno, comp) in image.comps.iter().enumerate() {
+        if compno < tcd.tile.comps.len() {
+            tcd.tile.comps[compno].data = comp.data.clone();
+        }
+    }
+
+    // Encode: DC shift → MCT → DWT → T1 → makelayer → T2
+    let mut tile_buf = vec![0u8; w as usize * h as usize * image.comps.len() * 4 + 4096];
+    let tile_len = tcd.encode_tile(image, &cp, &tcp, &mut tile_buf)?;
+
+    // Write J2K codestream
     let mut j2k_enc = J2kEncoder::new();
     j2k_enc.write_header(image, &cp, &tcp)?;
-    j2k_enc.write_tile(0, &[0u8; 4], 0, 1)?;
+    j2k_enc.write_tile(0, &tile_buf[..tile_len], 0, 1)?;
     let j2k_data = j2k_enc.finalize();
 
     match format {
@@ -354,7 +388,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_j2k_produces_decodable_pixels() {
         // Encode a grayscale image with pixel data, then decode and verify
         let params = vec![ImageCompParam {
@@ -389,7 +422,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn encode_decode_roundtrip_jp2_with_pixels() {
         let params = vec![ImageCompParam {
             dx: 1,
