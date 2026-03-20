@@ -735,17 +735,19 @@ impl Tcd {
 
             let comp = &mut self.tile.comps[desc.compno];
             let comp_w = (comp.x1 - comp.x0) as usize;
+            // T1 data is in row-major layout: data[row * w + col]
             for j in 0..desc.cblk_h {
+                let src_off = j * desc.cblk_w;
                 let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
                 for i in 0..desc.cblk_w {
-                    // T1 decoded data is in column-major order: data[col * h + row]
-                    let val = decoded_data[i * desc.cblk_h + j];
-                    // Dequantize: C: datap[i] /= 2 (reversible)
+                    let val = decoded_data[src_off + i];
+                    // Dequantize: C: datap[i] /= 2 (reversible) — but with correct IMSB,
+                    //             numbps match so identity is correct.
                     //             C: val * 0.5f * band->stepsize (irreversible)
                     // Note: our stepsize already includes 0.5 from init_tile,
                     // so we use stepsize directly to match C's 0.5 * raw_stepsize.
                     comp.data[dst_off + i] = if desc.qmfbid == 1 {
-                        val / 2
+                        val
                     } else {
                         (val as f32 * desc.stepsize) as i32
                     };
@@ -1604,14 +1606,11 @@ mod tests {
             panic!("expected Dec");
         };
 
-        // Fill decoded_data in column-major order (T1's output layout: data[col * h + row])
+        // Fill decoded_data in row-major layout: data[row * w + col]
+        // Identity dequant for reversible (no scaling).
         let mut test_data = vec![0i32; cblk_w * cblk_h];
-        for j in 0..cblk_h {
-            for i in 0..cblk_w {
-                // Value at pixel (i,j) = (j * cblk_w + i + 1) * 2
-                // Stored at column-major index: col * h + row = i * cblk_h + j
-                test_data[i * cblk_h + j] = (j * cblk_w + i) as i32 * 2 + 2;
-            }
+        for (i, val) in test_data.iter_mut().enumerate() {
+            *val = i as i32 + 1;
         }
         if let TcdCodeBlocks::Dec(cblks) =
             &mut tcd.tile.comps[0].resolutions[0].bands[0].precincts[0].cblks
@@ -1623,12 +1622,11 @@ mod tests {
 
         // Verify: LL coefficients should be at top-left of comp.data (row-major)
         let comp = &tcd.tile.comps[0];
-        for j in 0..cblk_h {
-            for i in 0..cblk_w {
-                let expected = (j * cblk_w + i) as i32 + 1; // divided by 2
-                let actual = comp.data[j * comp_w + i];
-                assert_eq!(actual, expected, "mismatch at ({i},{j})");
-            }
+        for (i, &val) in test_data.iter().enumerate() {
+            let j = i / cblk_w;
+            let col = i % cblk_w;
+            let actual = comp.data[j * comp_w + col];
+            assert_eq!(actual, val, "mismatch at ({col},{j})");
         }
     }
 
@@ -1674,17 +1672,20 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): raw = (1+1)*200=400, ÷2 = 200. x offset = res0_w
+        // HL (bandno=1): raw = (1+1)*200=400 (identity dequant, no /2). x offset = res0_w
         let hl_val = tcd.tile.comps[0].data[res0_w];
-        assert_eq!(hl_val, 200, "HL should be at x=res0_w");
+        assert_eq!(hl_val, 400, "HL should be at x=res0_w with value 400");
 
-        // LH (bandno=2): raw = (2+1)*200=600, ÷2 = 300. y offset = res0_h
+        // LH (bandno=2): raw = (2+1)*200=600 (identity dequant, no /2). y offset = res0_h
         let lh_val = tcd.tile.comps[0].data[res0_h * comp_w];
-        assert_eq!(lh_val, 300, "LH should be at y=res0_h");
+        assert_eq!(lh_val, 600, "LH should be at y=res0_h with value 600");
 
-        // HH (bandno=3): raw = (3+1)*200=800, ÷2 = 400. offset = (res0_w, res0_h)
+        // HH (bandno=3): raw = (3+1)*200=800 (identity dequant, no /2). offset = (res0_w, res0_h)
         let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
-        assert_eq!(hh_val, 400, "HH should be at (res0_w, res0_h)");
+        assert_eq!(
+            hh_val, 800,
+            "HH should be at (res0_w, res0_h) with value 800"
+        );
     }
 
     // --- decode_tile pipeline ---
@@ -1899,7 +1900,7 @@ mod tests {
         assert_eq!(dec_tcd.tile.comps[0].data.len(), 64);
         let decoded = &dec_tcd.tile.comps[0].data;
         for (i, (orig, dec)) in original_data.iter().zip(decoded.iter()).enumerate() {
-            let diff = (*dec as i32 - *orig as i32).abs();
+            let diff = (*dec - *orig).abs();
             assert!(
                 diff <= 1,
                 "pixel {}: original={}, decoded={}, diff={}",
