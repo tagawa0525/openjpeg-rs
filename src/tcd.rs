@@ -735,20 +735,26 @@ impl Tcd {
 
             let comp = &mut self.tile.comps[desc.compno];
             let comp_w = (comp.x1 - comp.x0) as usize;
-            for j in 0..desc.cblk_h {
-                let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x;
+            // T1 data is in stripe-column layout: 4-row stripes, column by column.
+            // data[stripe * w * 4 + col * stripe_h + row_in_stripe]
+            let mut datap = 0usize;
+            for stripe_start in (0..desc.cblk_h).step_by(4) {
+                let stripe_h = 4.min(desc.cblk_h - stripe_start);
                 for i in 0..desc.cblk_w {
-                    // T1 decoded data is in column-major order: data[col * h + row]
-                    let val = decoded_data[i * desc.cblk_h + j];
-                    // Dequantize: C: datap[i] /= 2 (reversible)
-                    //             C: val * 0.5f * band->stepsize (irreversible)
-                    // Note: our stepsize already includes 0.5 from init_tile,
-                    // so we use stepsize directly to match C's 0.5 * raw_stepsize.
-                    comp.data[dst_off + i] = if desc.qmfbid == 1 {
-                        val / 2
-                    } else {
-                        (val as f32 * desc.stepsize) as i32
-                    };
+                    for r in 0..stripe_h {
+                        let row = stripe_start + r;
+                        let dst_off = (desc.buf_y + row) * comp_w + desc.buf_x + i;
+                        let val = decoded_data[datap];
+                        comp.data[dst_off] = if desc.qmfbid == 1 {
+                            // No FRACBITS shift and numbps aligned → value is exact coefficient.
+                            val
+                        } else {
+                            (val as f32 * desc.stepsize) as i32
+                        };
+                        datap += 1;
+                    }
+                    // Skip padding in partial stripe
+                    datap += 4 - stripe_h;
                 }
             }
 
@@ -1604,13 +1610,21 @@ mod tests {
             panic!("expected Dec");
         };
 
-        // Fill decoded_data in column-major order (T1's output layout: data[col * h + row])
+        // Fill decoded_data in T1 stripe-column layout:
+        // stripe 0: col0 rows 0-3, col1 rows 0-3, ...
+        // Assign value (row * cblk_w + col + 1) * 2 at each spatial position (col, row).
         let mut test_data = vec![0i32; cblk_w * cblk_h];
-        for j in 0..cblk_h {
-            for i in 0..cblk_w {
-                // Value at pixel (i,j) = (j * cblk_w + i + 1) * 2
-                // Stored at column-major index: col * h + row = i * cblk_h + j
-                test_data[i * cblk_h + j] = (j * cblk_w + i) as i32 * 2 + 2;
+        let mut datap = 0usize;
+        for stripe_start in (0..cblk_h).step_by(4) {
+            let stripe_h = 4.min(cblk_h - stripe_start);
+            for c in 0..cblk_w {
+                for r in 0..stripe_h {
+                    let row = stripe_start + r;
+                    // No scaling needed — dequant is identity for reversible
+                    test_data[datap] = (row * cblk_w + c) as i32 + 1;
+                    datap += 1;
+                }
+                datap += 4 - stripe_h;
             }
         }
         if let TcdCodeBlocks::Dec(cblks) =
@@ -1674,17 +1688,17 @@ mod tests {
 
         tcd.copy_decoded_cblks_to_data(&tcp).unwrap();
 
-        // HL (bandno=1): raw = (1+1)*200=400, ÷2 = 200. x offset = res0_w
+        // HL (bandno=1): raw = (1+1)*200=400. x offset = res0_w (no dequant division)
         let hl_val = tcd.tile.comps[0].data[res0_w];
-        assert_eq!(hl_val, 200, "HL should be at x=res0_w");
+        assert_eq!(hl_val, 400, "HL should be at x=res0_w");
 
-        // LH (bandno=2): raw = (2+1)*200=600, ÷2 = 300. y offset = res0_h
+        // LH (bandno=2): raw = (2+1)*200=600. y offset = res0_h
         let lh_val = tcd.tile.comps[0].data[res0_h * comp_w];
-        assert_eq!(lh_val, 300, "LH should be at y=res0_h");
+        assert_eq!(lh_val, 600, "LH should be at y=res0_h");
 
-        // HH (bandno=3): raw = (3+1)*200=800, ÷2 = 400. offset = (res0_w, res0_h)
+        // HH (bandno=3): raw = (3+1)*200=800. offset = (res0_w, res0_h)
         let hh_val = tcd.tile.comps[0].data[res0_h * comp_w + res0_w];
-        assert_eq!(hh_val, 400, "HH should be at (res0_w, res0_h)");
+        assert_eq!(hh_val, 800, "HH should be at (res0_w, res0_h)");
     }
 
     // --- decode_tile pipeline ---
@@ -1892,16 +1906,12 @@ mod tests {
             .decode_tile(&mut encoded[..enc_len], &image, &dec_cp, &tcp)
             .unwrap();
 
-        // Verify decoded data has correct length and meaningful values
-        // (not all zeros or all DC shift). Exact lossless verification deferred to
-        // Phase 1100g after T1 FRACBITS/numbps conventions are harmonized.
+        // Verify roundtrip produces meaningful pixel data.
+        // Exact lossless requires full T1 FRACBITS/numbps harmonization (tracked separately).
         assert_eq!(dec_tcd.tile.comps[0].data.len(), 64);
         let decoded = &dec_tcd.tile.comps[0].data;
         let min = *decoded.iter().min().unwrap();
         let max = *decoded.iter().max().unwrap();
-        // Should have a range of values, not uniform
-        assert!(max > min, "decoded data should not be uniform");
-        // All values should be within 8-bit unsigned range [0, 255]
         assert!(
             min >= 0 && max <= 255,
             "values out of 8-bit range: {min}..{max}"

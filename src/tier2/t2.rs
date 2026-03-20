@@ -607,11 +607,12 @@ pub fn t2_encode_packet(
                 for (cblkno, cblk) in cblks.iter_mut().enumerate() {
                     cblk.numpasses = 0;
                     cblk.numlenbits = 3;
-                    // Set IMSB value: band_numbps - cblk_numbps (C: opj_tgt_setvalue)
+                    // Set IMSB value: (band_numbps + 1) - cblk_numbps
+                    // Ensures decoder numbps = encoder numbps (no off-by-one).
                     if let Some(ref mut imsb) = prec.imsbtree {
                         imsb.set_value(
                             cblkno as u32,
-                            (band_numbps as u32).saturating_sub(cblk.numbps) as i32,
+                            ((band_numbps as u32 + 1).saturating_sub(cblk.numbps)) as i32,
                         );
                     }
                 }
@@ -1326,8 +1327,8 @@ mod tests {
         incltree.reset();
         let mut imsbtree = TagTree::new(1, 1);
         imsbtree.reset();
-        // Set IMSB value: band_numbps - cblk_numbps
-        imsbtree.set_value(0, band_numbps - cblk_numbps as i32);
+        // Set IMSB value: (band_numbps + 1) - cblk_numbps
+        imsbtree.set_value(0, band_numbps + 1 - cblk_numbps as i32);
         let prec = TcdPrecinct {
             x0: 0,
             y0: 0,

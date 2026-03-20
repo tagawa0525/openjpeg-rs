@@ -240,7 +240,7 @@ impl T1 {
         cblksty: u32,
     ) -> i32 {
         let mut nmsedec = 0i32;
-        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let one = 1u32 << bpno as u32;
         let w = self.w as usize;
         let h = self.h as usize;
         let stride = self.flags_stride();
@@ -378,7 +378,7 @@ impl T1 {
         pass_type: u8,
     ) -> i32 {
         let mut nmsedec = 0i32;
-        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let one = 1u32 << bpno as u32;
         let w = self.w as usize;
         let h = self.h as usize;
         let stride = self.flags_stride();
@@ -541,7 +541,7 @@ impl T1 {
         cblksty: u32,
     ) -> i32 {
         let mut nmsedec = 0i32;
-        let one = 1u32 << (bpno as u32 + T1_NMSEDEC_FRACBITS);
+        let one = 1u32 << bpno as u32;
         let w = self.w as usize;
         let h = self.h as usize;
         let stride = self.flags_stride();
@@ -1108,7 +1108,7 @@ impl T1 {
 
     /// Encode a code-block (C: opj_t1_encode_cblk).
     ///
-    /// Data must already be in zigzag layout, shifted by T1_NMSEDEC_FRACBITS,
+    /// Data must already be in stripe-column layout (no FRACBITS shift),
     /// in two's complement. Returns (passes, cumulative_wmsedec).
     #[allow(clippy::too_many_arguments)]
     pub fn encode_cblk(
@@ -1141,7 +1141,7 @@ impl T1 {
         }
 
         let numbps = if max != 0 {
-            (int_floorlog2(max) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+            (int_floorlog2(max) + 1) as u32
         } else {
             0
         };
@@ -1506,7 +1506,7 @@ fn decode_one_cblk(job: &CblkDecodeJob) -> Result<Vec<i32>> {
 
 /// Encode job for one codeblock.
 struct CblkEncodeJob {
-    /// Coefficient data in zigzag layout, shifted by T1_NMSEDEC_FRACBITS.
+    /// Coefficient data in stripe-column layout (no FRACBITS shift).
     zigzag_data: Vec<i32>,
     /// Codeblock dimensions.
     w: u32,
@@ -1568,10 +1568,10 @@ fn encode_one_cblk(job: &CblkEncodeJob) -> Result<CblkEncodeResult> {
         Vec::new()
     };
 
-    // Compute numbps from data
+    // Compute numbps from data (no FRACBITS subtraction)
     let max_abs = t1.data.iter().map(|&v| v & 0x7FFFFFFF).max().unwrap_or(0);
     let numbps = if max_abs != 0 {
-        (int_floorlog2(max_abs) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+        (int_floorlog2(max_abs) + 1) as u32
     } else {
         0
     };
@@ -1728,21 +1728,33 @@ pub fn t1_encode_cblks(
                                 continue;
                             }
 
-                            // Copy from tile component (row-major) to zigzag layout
+                            // Copy from tile component to T1 stripe-column data buffer.
+                            // T1 processes data in 4-row stripes, column by column:
+                            //   data[stripe * w * 4 + col * stripe_h + row_in_stripe]
                             let cblk_x0 = (cblk.x0 - comp.x0) as usize;
                             let cblk_y0 = (cblk.y0 - comp.y0) as usize;
-                            let mut zigzag_data = vec![0i32; (cblk_w * cblk_h) as usize];
-                            for r in 0..cblk_h as usize {
-                                for c in 0..cblk_w as usize {
-                                    let src_idx = (cblk_y0 + r) * comp_w + (cblk_x0 + c);
-                                    let val = if src_idx < comp.data.len() {
-                                        comp.data[src_idx]
-                                    } else {
-                                        0
-                                    };
-                                    // Zigzag layout: col * h + row
-                                    let dst_idx = c * cblk_h as usize + r;
-                                    zigzag_data[dst_idx] = val << T1_NMSEDEC_FRACBITS;
+                            let cw = cblk_w as usize;
+                            let ch = cblk_h as usize;
+                            // Copy to T1 stripe-column layout WITHOUT FRACBITS shift.
+                            // The decoder doesn't use FRACBITS, so the encoder must match.
+                            let mut t1_data = vec![0i32; cw * ch];
+                            let mut datap = 0usize;
+                            for stripe_start in (0..ch).step_by(4) {
+                                let stripe_h = 4.min(ch - stripe_start);
+                                for c in 0..cw {
+                                    for r in 0..stripe_h {
+                                        let src_row = cblk_y0 + stripe_start + r;
+                                        let src_col = cblk_x0 + c;
+                                        let src_idx = src_row * comp_w + src_col;
+                                        let val = if src_idx < comp.data.len() {
+                                            comp.data[src_idx]
+                                        } else {
+                                            0
+                                        };
+                                        t1_data[datap] = val;
+                                        datap += 1;
+                                    }
+                                    datap += 4 - stripe_h;
                                 }
                             }
 
@@ -1760,7 +1772,7 @@ pub fn t1_encode_cblks(
                             };
 
                             jobs.push(CblkEncodeJob {
-                                zigzag_data,
+                                zigzag_data: t1_data,
                                 w: cblk_w,
                                 h: cblk_h,
                                 orient,
@@ -2334,7 +2346,7 @@ mod tests {
         // (simulating a prior clean-up pass). Its east neighbor (col=1, row=0)
         // has a non-zero bit at the test bitplane and should be coded by sigpass.
         let bpno: i32 = 3;
-        let one = 1i32 << (bpno + T1_NMSEDEC_FRACBITS as i32);
+        let one = 1i32 << bpno;
 
         // --- Encode ---
         let mut enc = T1::new(true);
@@ -2408,8 +2420,7 @@ mod tests {
 
         // Encoder zigzag layout: col 1 = data[4..8], row 0 = data[4]
         // Set coefficient to a value that has bits at both bpno=5 and bpno=3
-        let val = (1i32 << (higher_bpno + T1_NMSEDEC_FRACBITS as i32))
-            | (1i32 << (refine_bpno + T1_NMSEDEC_FRACBITS as i32));
+        let val = (1i32 << higher_bpno) | (1i32 << refine_bpno);
         enc.data[4] = val; // positive, SMR = two's complement for positive
 
         // Mark (col=1, row=0) as already significant (simulating prior clnpass at higher bpno)
@@ -2490,7 +2501,7 @@ mod tests {
         // Clean-up pass is always the first pass for a fresh (all-zero flags) block,
         // so no prior significance/PI state needed.
         let bpno: i32 = 3;
-        let one = 1i32 << (bpno + T1_NMSEDEC_FRACBITS as i32);
+        let one = 1i32 << bpno;
 
         // --- Encode ---
         let mut enc = T1::new(true);
@@ -2636,23 +2647,25 @@ mod tests {
         let w = 4u32;
         let h = 4u32;
 
-        // 2. Convert to zigzag SMR format shifted by FRACBITS.
-        //    Zigzag layout: col c stores data[c*4..c*4+4], where sub-indices
-        //    0..3 correspond to rows 0..3.
-        //    So zigzag[c * h + r] = original[r * w + c].
-        let mut zigzag_data = vec![0i32; (w * h) as usize];
-        for r in 0..h as usize {
+        // 2. Convert to stripe-column layout (no FRACBITS shift).
+        //    Stripe-column: for each 4-row stripe, for each col, store 4 rows.
+        let mut stripe_data = vec![0i32; (w * h) as usize];
+        let mut datap = 0usize;
+        for stripe_start in (0..h as usize).step_by(4) {
+            let stripe_h = 4.min(h as usize - stripe_start);
             for c in 0..w as usize {
-                let val = original[r * w as usize + c];
-                let shifted = val << T1_NMSEDEC_FRACBITS;
-                zigzag_data[c * h as usize + r] = shifted; // two's complement
+                for r in 0..stripe_h {
+                    stripe_data[datap] = original[(stripe_start + r) * w as usize + c];
+                    datap += 1;
+                }
+                datap += 4 - stripe_h;
             }
         }
 
         // 3. Encode
         let mut enc = T1::new(true);
         enc.allocate_buffers(w, h).unwrap();
-        enc.data[..zigzag_data.len()].copy_from_slice(&zigzag_data);
+        enc.data[..stripe_data.len()].copy_from_slice(&stripe_data);
 
         let mut enc_buf = vec![0u8; 4096];
         let (passes, cumwmsedec) = enc.encode_cblk(
@@ -2693,11 +2706,10 @@ mod tests {
             num_passes: total_passes,
         }];
 
-        // Compute numbps the same way encode_cblk does
+        // Compute numbps the same way encode_cblk does (no FRACBITS)
         let max_abs = original.iter().map(|&v| v.abs()).max().unwrap();
-        let max_shifted = max_abs << T1_NMSEDEC_FRACBITS;
-        let numbps = if max_shifted != 0 {
-            (int_floorlog2(max_shifted) + 1 - T1_NMSEDEC_FRACBITS as i32) as u32
+        let numbps = if max_abs != 0 {
+            (int_floorlog2(max_abs) + 1) as u32
         } else {
             0
         };
