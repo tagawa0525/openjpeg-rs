@@ -131,7 +131,12 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     // Copy image pixel data to tile components
     for (compno, comp) in image.comps.iter().enumerate() {
         if compno < tcd.tile.comps.len() {
-            tcd.tile.comps[compno].data = comp.data.clone();
+            let tile_comp = &mut tcd.tile.comps[compno];
+            let expected = tile_comp.numpix;
+            if comp.data.len() != expected {
+                tile_comp.data.resize(comp.data.len(), 0);
+            }
+            tile_comp.data.copy_from_slice(&comp.data);
         }
     }
 
