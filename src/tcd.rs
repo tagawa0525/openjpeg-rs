@@ -961,30 +961,24 @@ impl Tcd {
                                 cblk.layers.resize(numlayers, TcdLayer::default());
 
                                 // Distribute all passes into layer 0 (fixed quality)
-                                let total = cblk.totalpasses;
-                                if total == 0 {
+                                let total_passes = cblk.totalpasses as usize;
+                                let used_passes = total_passes.min(cblk.passes.len());
+                                if used_passes == 0 {
                                     continue;
                                 }
 
-                                // Layer 0 gets all passes
-                                let data_len = if total > 0 && (total as usize) <= cblk.passes.len()
-                                {
-                                    cblk.passes[total as usize - 1].rate
-                                } else {
-                                    0
-                                };
-                                let disto: f64 = cblk.passes[..total as usize]
-                                    .iter()
-                                    .map(|p| p.distortion_decrease)
-                                    .sum();
+                                // Layer 0 gets all passes; use last pass's cumulative stats
+                                let last_pass = &cblk.passes[used_passes - 1];
+                                let data_len = last_pass.rate;
+                                let disto = last_pass.distortion_decrease;
 
                                 cblk.layers[0] = TcdLayer {
-                                    numpasses: total,
+                                    numpasses: used_passes as u32,
                                     len: data_len,
                                     disto,
                                     data_offset: 0,
                                 };
-                                cblk.numpassesinlayers = total;
+                                cblk.numpassesinlayers = used_passes as u32;
                             }
                         }
                     }
