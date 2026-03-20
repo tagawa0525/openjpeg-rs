@@ -24,11 +24,11 @@ read coefficients from wrong spatial positions, producing a corrupted MQ bitstre
 
 **Example (8×8 block):**
 
-| Index | Column-major (wrong)           | Stripe-column (correct) |
-| ----- | ------------------------------ | ----------------------- |
-| 0-3   | col0, rows 0-7                 | col0, rows 0-3          |
-| 4-7   | col0, rows 4-7 (still col0!)   | col1, rows 0-3          |
-| 8-11  | col1, rows 0-3                 | col2, rows 0-3          |
+| Index | Column-major (wrong)         | Stripe-column (correct) |
+| ----- | ---------------------------- | ----------------------- |
+| 0-3   | col0, rows 0-7               | col0, rows 0-3          |
+| 4-7   | col0, rows 4-7 (still col0!) | col1, rows 0-3          |
+| 8-11  | col1, rows 0-3               | col2, rows 0-3          |
 
 ### Bug 2: copy_decoded_cblks_to_data reads wrong layout
 
