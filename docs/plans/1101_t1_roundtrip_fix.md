@@ -1,6 +1,6 @@
 # Fix: T1 encoder/decoder roundtrip bugs
 
-**Status: IMPLEMENTED**
+Status: IMPLEMENTED
 
 ## Context
 
