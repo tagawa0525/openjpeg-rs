@@ -83,7 +83,7 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
         .comps
         .iter()
         .map(|comp| {
-            let comp_dc = if !comp.sgnd && comp.prec <= 31 {
+            let comp_dc = if !comp.sgnd && comp.prec > 0 && comp.prec <= 31 {
                 1i32 << (comp.prec - 1)
             } else {
                 0
