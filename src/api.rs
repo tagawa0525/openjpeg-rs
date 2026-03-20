@@ -78,6 +78,12 @@ pub fn encode(image: &Image, format: CodecFormat) -> Result<Vec<u8>> {
     }
 
     let prec = image.comps[0].prec;
+    // Validate all components share the same precision (per-component precision not yet supported)
+    if image.comps.iter().any(|c| c.prec != prec) {
+        return Err(Error::InvalidInput(
+            "All components must have the same precision for encoding".into(),
+        ));
+    }
 
     let tccps: Vec<_> = image
         .comps
