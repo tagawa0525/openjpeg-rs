@@ -91,7 +91,23 @@ pub fn encode_with_params(
     use crate::j2k::params::{CodingParameters, TileCodingParameters, TileCompCodingParameters};
     use crate::j2k::write::J2kEncoder;
     use crate::tcd::Tcd;
-    use crate::types::{J2K_CCP_QNTSTY_NOQNT, J2K_CCP_QNTSTY_SIQNT};
+    use crate::types::J2K_CCP_QNTSTY_NOQNT;
+
+    if options.qmfbid > 1 {
+        return Err(Error::InvalidInput(format!(
+            "qmfbid must be 0 or 1, got {}",
+            options.qmfbid
+        )));
+    }
+    if options.mct > 1 {
+        return Err(Error::InvalidInput(format!(
+            "mct must be 0 or 1, got {}",
+            options.mct
+        )));
+    }
+    if options.numresolutions == 0 {
+        return Err(Error::InvalidInput("numresolutions must be >= 1".into()));
+    }
 
     let w = image.x1.saturating_sub(image.x0);
     let h = image.y1.saturating_sub(image.y0);
@@ -106,11 +122,10 @@ pub fn encode_with_params(
         ));
     }
 
-    let qntsty = if options.qmfbid == 1 {
-        J2K_CCP_QNTSTY_NOQNT
-    } else {
-        J2K_CCP_QNTSTY_SIQNT
-    };
+    // Keep NOQNT for all modes until full irreversible quantization (SIQNT/SEQNT)
+    // is implemented. SIQNT serialization in write_qcd requires consistent stepsize
+    // generation that doesn't exist yet.
+    let qntsty = J2K_CCP_QNTSTY_NOQNT;
 
     let tccps: Vec<_> = image
         .comps
@@ -160,7 +175,10 @@ pub fn encode_with_params(
             let tile_comp = &mut tcd.tile.comps[compno];
             let expected = tile_comp.numpix;
             if comp.data.len() != expected {
-                tile_comp.data.resize(comp.data.len(), 0);
+                return Err(Error::InvalidInput(format!(
+                    "component {compno}: data length {} does not match expected {expected}",
+                    comp.data.len()
+                )));
             }
             tile_comp.data.copy_from_slice(&comp.data);
         }
