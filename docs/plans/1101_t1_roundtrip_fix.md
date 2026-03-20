@@ -1,117 +1,88 @@
-# Fix: T1 encoder/decoder roundtrip bugs (d11437d regression)
+# Fix: T1 encoder/decoder roundtrip bugs
 
-**Status: IN_PROGRESS**
+**Status: IMPLEMENTED**
 
 ## Context
 
-Commit d11437d ("fix(t1): remove FRACBITS from encoder to align with decoder bitplanes") was intended to fix
-encoder/decoder alignment but introduced two bugs and weakened tests to hide the failures:
+T1 encoder/decoder roundtrip test failures:
 
-- **Symptom 1**: TCD roundtrip `[0,4,8,...,252]` → `[63,71,79,...,191]` (63/64 mismatch)
-- **Symptom 2**: API roundtrip uniform pixel 100 → 113 (+13 offset)
+- **Symptom 1**: TCD roundtrip `[0,4,8,...,252]` → scrambled values (pixel positions mixed)
+- **Symptom 2**: API roundtrip uniform pixel 100 → 114 (+14 offset)
 
-Root cause analysis identifies **two independent bugs** and **three test regressions**.
+Root cause analysis identified **three independent bugs**.
 
 ## Bug Analysis
 
-### Bug 1: copy_decoded_cblks_to_data reads wrong data layout
+### Bug 1: Encoder data preparation uses wrong layout (root cause)
 
-- **Encoder** (`enc_sigpass` etc.): accesses `data[datap], data[datap+1], data[datap+2], data[datap+3]` → **stripe-column**
-- **Decoder** (`dec_sigpass_mqc` etc.): accesses `data[datap], data[datap+w], data[datap+2w], data[datap+3w]` → **row-major**
-- `copy_decoded_cblks_to_data` reads stripe-column (d11437d changed from column-major to stripe-column), but decoder produces row-major
-- **Result**: pixel positions scrambled
+The T1 encoder scan pattern (`enc_sigpass`, `enc_refpass`, `enc_clnpass`) reads data
+sequentially with `datap += 4` per column within 4-row stripes — **stripe-column** order.
 
-### Bug 2: IMSB encode formula introduces off-by-one in decoder numbps
+But `t1_encode_cblks` prepared data in **column-major** layout (`col * h + row`).
+These layouts only match for single-stripe blocks (h ≤ 4). For taller blocks, the encoder
+read coefficients from wrong spatial positions, producing a corrupted MQ bitstream.
 
-Tag tree decode loop returns `i = imsb_value + 1`. Combined with decode formula
-`numbps = (band_numbps + 1) - i`, the effective formula is `numbps = band_numbps - imsb_value`.
+**Example (8×8 block):**
 
-| Version   | Encode IMSB                       | Decoded numbps    | Correct? |
-| --------- | --------------------------------- | ----------------- | -------- |
-| d11437d前 | `band_numbps - cblk_numbps`       | `cblk_numbps`     | Yes      |
-| d11437d後 | `(band_numbps + 1) - cblk_numbps` | `cblk_numbps - 1` | **No**   |
+| Index | Column-major (wrong)           | Stripe-column (correct) |
+| ----- | ------------------------------ | ----------------------- |
+| 0-3   | col0, rows 0-7                 | col0, rows 0-3          |
+| 4-7   | col0, rows 4-7 (still col0!)   | col1, rows 0-3          |
+| 8-11  | col1, rows 0-3                 | col2, rows 0-3          |
 
-Decoder gets 1 fewer bitplane → reconstruction at ~half scale → explains +13 offset for pixel 100.
+### Bug 2: copy_decoded_cblks_to_data reads wrong layout
 
-### Not a bug: FRACBITS removal
+`copy_decoded_cblks_to_data` read decoded data as column-major (`data[col * h + row]`),
+but the T1 decoder (`dec_sigpass_mqc` etc.) writes in row-major (`data[row * w + col]`).
 
-FRACBITS don't change the MQ bitstream content (same bit values at same logical positions).
-Removal simplifies encoder and makes it symmetric with decoder. Keep as-is.
+### Bug 3: Unnecessary /2 dequantization
 
-### Not a bug: Identity dequant (`val` instead of `val / 2`)
+`copy_decoded_cblks_to_data` applied `val / 2` for reversible mode (qmfbid==1).
+With correct IMSB formula (`band_numbps - cblk_numbps`), encoder and decoder numbps
+match, so the decoder already reconstructs at the correct scale. The `/2` halved
+the output unnecessarily.
 
-With correct IMSB (numbps match), decoder reconstructs at correct scale. Identity is correct.
-The old `/2` compensated for the pre-existing off-by-one in T2 decode `(band_numbps + 1)` formula.
+### Not a bug: IMSB formula
+
+The IMSB encode formula `band_numbps - cblk_numbps` and decode formula
+`(band_numbps + 1) - i` (where tag tree decode returns `i = value + 1`)
+correctly roundtrip to produce `decoded_numbps = cblk_numbps`. No change needed.
+
+### Not a bug: FRACBITS
+
+The encoder shifts input by `T1_NMSEDEC_FRACBITS` (6 bits) and subtracts FRACBITS
+from numbps. The decoder uses this adjusted numbps and reconstructs at the original
+(unshifted) scale. This asymmetry is intentional and correct.
 
 ## Changes
 
-### Files to modify
+### Files modified
 
-| File              | Change                                                    |
-| ----------------- | --------------------------------------------------------- |
-| `src/tcd.rs`      | Fix `copy_decoded_cblks_to_data` to read row-major layout |
-| `src/tcd.rs`      | Fix unit test `copy_decoded_cblks_single_res` data layout |
-| `src/tcd.rs`      | Strengthen `encode_decode_roundtrip_single_tile` test     |
-| `src/tier2/t2.rs` | Revert IMSB encode to `band_numbps - cblk_numbps`         |
-| `src/tier2/t2.rs` | Fix encode roundtrip test's IMSB formula                  |
-| `src/api.rs`      | Strengthen `encode_decode_roundtrip_jp2_with_pixels` test |
+| File               | Change                                                              |
+| ------------------ | ------------------------------------------------------------------- |
+| `src/coding/t1.rs` | Fix data preparation: column-major → stripe-column layout           |
+| `src/tcd.rs`       | Fix `copy_decoded_cblks_to_data`: column-major → row-major read     |
+| `src/tcd.rs`       | Fix dequantization: `val / 2` → `val` (identity) for reversible     |
+| `src/tcd.rs`       | Fix unit tests for new data layouts                                 |
+| `src/tcd.rs`       | Strengthen `encode_decode_roundtrip_single_tile` (per-pixel ±1)     |
+| `src/tcd.rs`       | Add `encode_decode_pipeline_stages` regression test                 |
+| `src/api.rs`       | Strengthen `encode_decode_roundtrip_jp2_with_pixels` (per-pixel ±1) |
 
-### Commit plan (TDD)
+### Commits
 
 1. **RED** `test(tcd): strengthen roundtrip test to verify per-pixel accuracy`
-   - `encode_decode_roundtrip_single_tile`: assert each pixel within ±1 of original
-   - Will fail due to layout + IMSB bugs
-
-2. **RED** `test(api): verify exact decoded value for uniform pixel roundtrip`
-   - `encode_decode_roundtrip_jp2_with_pixels`: assert decoded value within ±1 of 100
-   - Will fail due to IMSB bug
-
-3. **GREEN** `fix(tcd): read decoded cblk data in row-major layout matching T1 decoder`
-   - `copy_decoded_cblks_to_data` (tcd.rs:738-759): change from stripe-column to row-major
-
-     ```rust
-     // Before (stripe-column - WRONG):
-     let mut datap = 0usize;
-     for stripe_start in (0..desc.cblk_h).step_by(4) { ... }
-
-     // After (row-major - matches decoder output):
-     for j in 0..desc.cblk_h {
-         for i in 0..desc.cblk_w {
-             let dst_off = (desc.buf_y + j) * comp_w + desc.buf_x + i;
-             let val = decoded_data[j * desc.cblk_w + i];
-             comp.data[dst_off] = if desc.qmfbid == 1 { val } else { ... };
-         }
-     }
-     ```
-
-   - Fix `copy_decoded_cblks_single_res` test: use row-major test data layout
-   - Fix `copy_decoded_cblks_two_res_subband_offsets` test: use row-major + adjust expected values
-
-4. **GREEN** `fix(t2): revert IMSB encode to band_numbps - cblk_numbps`
-   - `t2_encode_packet` (t2.rs:610-615): revert to `band_numbps - cblk_numbps`
-
-     ```rust
-     // Before (d11437d - WRONG):
-     imsb.set_value(cblkno, ((band_numbps as u32 + 1).saturating_sub(cblk.numbps)) as i32);
-
-     // After (correct):
-     imsb.set_value(cblkno, (band_numbps as u32).saturating_sub(cblk.numbps) as i32);
-     ```
-
-   - Fix `t2_encode_decode_roundtrip` test: revert IMSB formula
-
-5. **VERIFY** All tests pass, clippy clean, fmt clean
+2. **GREEN** `fix(t1,tcd): fix encoder/decoder data layout and dequantization`
+3. `test(tcd): add pipeline stage regression test`
 
 ## Verification
 
 ```bash
-cargo test                                     # all tests pass
-cargo test encode_decode_roundtrip -- --nocapture  # verify pixel accuracy
-cargo clippy --all-targets -- -D warnings
-cargo fmt -- --check
+cargo test --lib                               # 429 passed
+cargo clippy --all-targets -- -D warnings       # clean
+cargo fmt -- --check                            # clean
 ```
 
-After fix, expected behavior:
+After fix:
 
-- TCD roundtrip: each decoded pixel within ±1 of original (T1 reconstruction bias)
+- TCD roundtrip: each decoded pixel within ±1 of original
 - API roundtrip: uniform 100 decodes to 99-101
