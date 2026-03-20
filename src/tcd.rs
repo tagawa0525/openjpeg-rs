@@ -1875,6 +1875,8 @@ mod tests {
         enc_tcd.init_tile(0, &image, &cp, &tcp, true).unwrap();
         enc_tcd.tile.comps[0].data = image.comps[0].data.clone();
 
+        let original_data = image.comps[0].data.clone();
+
         let mut encoded = vec![0u8; 8192];
         let enc_len = enc_tcd
             .encode_tile(&image, &cp, &tcp, &mut encoded)
@@ -1892,20 +1894,21 @@ mod tests {
             .decode_tile(&mut encoded[..enc_len], &image, &dec_cp, &tcp)
             .unwrap();
 
-        // Verify decoded data has correct length and meaningful values
-        // (not all zeros or all DC shift). Exact lossless verification deferred to
-        // Phase 1100g after T1 FRACBITS/numbps conventions are harmonized.
+        // Verify per-pixel accuracy: each decoded pixel should be within ±1 of original
+        // (T1 reconstruction bias is acceptable in reversible mode)
         assert_eq!(dec_tcd.tile.comps[0].data.len(), 64);
         let decoded = &dec_tcd.tile.comps[0].data;
-        let min = *decoded.iter().min().unwrap();
-        let max = *decoded.iter().max().unwrap();
-        // Should have a range of values, not uniform
-        assert!(max > min, "decoded data should not be uniform");
-        // All values should be within 8-bit unsigned range [0, 255]
-        assert!(
-            min >= 0 && max <= 255,
-            "values out of 8-bit range: {min}..{max}"
-        );
+        for (i, (orig, dec)) in original_data.iter().zip(decoded.iter()).enumerate() {
+            let diff = (*dec as i32 - *orig as i32).abs();
+            assert!(
+                diff <= 1,
+                "pixel {}: original={}, decoded={}, diff={}",
+                i,
+                orig,
+                dec,
+                diff
+            );
+        }
     }
 
     #[test]
