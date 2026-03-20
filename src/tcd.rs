@@ -904,7 +904,8 @@ impl Tcd {
     /// Compute explicit quantization step sizes for encoding.
     ///
     /// For 5-3 reversible DWT (qmfbid=1): NOQNT style — expn = gain + prec, mant = 0.
-    /// For 9-7 irreversible DWT: scalar expn quantization using DWT norms.
+    /// For 9-7 irreversible DWT: NOQNT fallback (expn = prec, mant = 0).
+    /// Full scalar quantization with DWT norms is deferred.
     /// (C: opj_dwt_calc_explicit_stepsizes)
     pub fn calc_explicit_stepsizes(tcp: &mut TileCodingParameters, prec: u32) {
         use crate::j2k::params::Stepsize;
