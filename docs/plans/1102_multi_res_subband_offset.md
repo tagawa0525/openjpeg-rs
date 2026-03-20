@@ -1,6 +1,6 @@
 # Fix: T1エンコーダのサブバンドオフセット欠落
 
-Status: PLANNED
+Status: IMPLEMENTED
 
 ## Context
 
