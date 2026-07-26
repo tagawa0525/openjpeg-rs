@@ -1,3 +1,6 @@
 /target
 /reference
 /.claude
+
+# direnv (nix-direnv) が生成する devShell のキャッシュ
+/.direnv
